@@ -1,0 +1,24 @@
+include("ClosedForm.jl")
+
+ω = 2π
+vac, glass = IsotropicMaterial(1.0 + 0.001im), IsotropicMaterial(2.25 + 0.001im)
+stack = [FlatOpticalLayer(vac, 2.0), FlatOpticalLayer(glass, 2.0), FlatOpticalLayer(vac, 2.0)]
+src = 1                     # "on top of the stack" = layer 1
+box = (0.3, 0.3, 0.1)       # Δx, Δy, Δz of each box
+
+# 1. quadrature grid for boxes of this size in this layer (once per stack, ω, layer, box size)
+kρ, wρ, φs, wφ, info = box_kρ_grid(stack, ω, src; box=box, N_phi=96, rtol=1e-3, kρ_cap=1500.0, ρ_far=1.0)
+
+# 2. transfer cache (once per stack, ω, source layer)
+cache = build_cavity_transfer_2d(stack, ω, src, kρ, wρ, φs, wφ)
+
+# 3. the two sources: position = box centre, p = the box's total dipole moment
+dips = [Dipole_constructor(:z, ω, 0.0, 1.5, src),
+        Dipole_constructor([1.0, 0.0, 0.5], ω, 0.4, 1.2, src; y=-0.2)]
+
+# 4. lateral grid and observation depths per layer, then the field
+grid  = uniform_kxky_grid(L=1.0, Δx=0.1)
+z_obs = Dict(o => collect(0.05:0.1:stack[o].d) for o in 1:3)
+E = closed_form_field(Dict(src => cache), grid, z_obs, dips;
+                      box_lateral=box[1:2], Δz_box=box[3], lateral=:nufft)
+# E[o] :: (Nx, Ny, length(z_obs[o]), 3) = (x, y, z, component), for each obs layer o
