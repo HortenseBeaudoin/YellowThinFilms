@@ -135,8 +135,8 @@ function _berreman_core(ϵ, μ, ω, k)
     denomμ = one(T) / μ33
     iω = one(T) / ω
 
-    ϵzt1 = conj(ϵ31); ϵzt2 = conj(ϵ32)
-    μzt1 = conj(μ31); μzt2 = conj(μ32)
+    ϵzt1 = ϵ31; ϵzt2 = ϵ32
+    μzt1 = μ31; μzt2 = μ32
 
     Sϵ11 = ϵ11 - ϵ13 * denomϵ * ϵzt1
     Sϵ12 = ϵ12 - ϵ13 * denomϵ * ϵzt2
