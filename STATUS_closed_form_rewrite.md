@@ -47,6 +47,28 @@ The project now lives in a clone of the GitHub repository (this folder). The val
   - cross-layer and biaxial scattered: low-rank skeletons in z (measured ranks ~10 of 32 at 1e-6, except on a hyperbolic layer's own side), with dense per-pair as the fallback;
   - apply via z-FFT / BLAS, accumulated in k-space.
 
+## Branch `z-structured-operator` (2026-10-12, from `small-speedups`)
+
+- **`closed_form_G(...; terms=...)`** keeps one class of terms: `:all` (default, unchanged), `:direct`, `:scattered`, `:toeplitz` (direct + matched-branch reflections f→f, b→b), `:hankel` (cross-branch reflections). It is split at the node level through `amplitude_at(...; seeds=:f|:b)`.
+  - `:toeplitz + :hankel = :all` and `:direct + :scattered = :all` hold on any medium.
+  - On an isotropic source layer, or a uniaxial one in an azimuthally symmetric stack, `:toeplitz` depends on `z' − zpos` only and `:hankel` on `z' + zpos` only (1e-15).
+  - Biaxial: 0.8% / 39% violation, as expected (mode mixing between different `Q`).
+- **`mod_GreenOperator.jl`:** `build_layer_operator(cache, grid, z_src, z_obs_by_layer; structure=:auto, kw...)` → `LayerGreenOperator`; `apply_operator(op, P)` with `P` = moments per pixel and source plane (`dipole_moments(op, dips)` builds it); `operator_summary(op)`.
+  - Uniform z grids per layer, given by the user. Source planes are reordered internally to increasing cavity-frame `zpos` (layer 1 flips).
+  - Blocks:
+    - same layer, structured: Toeplitz + Hankel, `Ns+No−1` planes each, FFT'd along z (`Lz ≥ Ns+No−1`). The Hankel part uses the plane-reversed source spectrum, with its output shift folded into the kernel.
+    - same layer, biaxial/gyrotropic: Toeplitz direct + dense scattered.
+    - cross layer: dense per pair.
+  - `:auto` decides from the media, then checks the 4-point identity on a few pixels and falls back to dense with a warning.
+  - Apply: 2D FFT of every source plane; z-FFT, pointwise 3×3 and z-iFFT for the Toeplitz/Hankel blocks; plane-pair products for dense blocks; one 2D iFFT per observation plane. All accumulation is in k-space.
+- **`Gz_ClosedForm_Operator_Validation.jl`** (~45 s): term split [t]; operator = `closed_form_field` for random moments, all layers, point/box, source layers 1/2, structured / toeplitz_dense / dense [o]: ≤ 1.3e-15; cost [m].
+- **Cost.** Gila-like stack (vac 1.5 / glass 0.5 / vac 2.0), box 1/32 in layer 1, 48×48 px (padded 96×96), 300k nodes:
+  - layer 1 → 1 (48×48 planes): structured, 243 MB, 5.6 s (per-depth route ≈ 2.9 GB, ≈ 75 s);
+  - layer 1 → 2 (48×16): dense, 972 MB, 21 s;
+  - apply, full layer-1 source volume (110k voxels) → layers 1 + 2: 0.08 s;
+  - per-depth route: 101 s, 3.9 GB.
+- **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3). The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
+
 ## Changes since 2026-09-24
 
 - **2026-09-28/30: Gila anisotropic study.** Written up in `RESULTS_gila_anisotropic_comparison.md`, with metrics in `diagnostics/results_summary.csv` (regenerate with `diagnostics/summarize_results.jl`). Conclusions:

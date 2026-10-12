@@ -110,6 +110,55 @@ end
             SVector(_boxphase(ComplexF64(Qb[1]), -zpos, Δz), _boxphase(ComplexF64(Qb[2]), -zpos, Δz)))
 end
 
+# `seeds`: which source-side branch feeds the reflected amplitudes -- `:all`, or only the
+# forward (`:f`, `sf∘Ψf`) or backward (`:b`, `sb∘Ψb`) seeds. Used to split the same-layer
+# reflected field into its ζ- and σ-dependent classes (`_term_amplitudes`).
+@inline function _seed_mask(seeds::Symbol)
+    seeds === :all && return (1.0, 1.0)
+    seeds === :f && return (1.0, 0.0)
+    seeds === :b && return (0.0, 1.0)
+    error("amplitude_at: seeds must be :all, :f or :b (got :$seeds)")
+end
+
+"""
+    _term_amplitudes(cache, obs_layer, zsrc_local, Δz_box, terms) -> (Af_r, Ab_r, with_direct)
+
+Reflected amplitudes and whether to add the direct term, for one class of terms:
+
+  - `:all`       -- everything (default);
+  - `:direct`    -- the same-layer direct term only (incl. interior slab and local Ez);
+  - `:scattered` -- everything but the direct term;
+  - `:toeplitz`  -- same layer: direct + the reflected terms whose source and
+    observation branches match (f→f, b→b). In the cavity frame
+    `Ψf(zpos)·Φf(z') ∝ e^{iQf(z'−zpos)}` and `Ψb·Φb ∝ e^{iQb(z'−zpos)}`, so on a
+    layer whose interfaces keep each mode's `Q` (`Qb = −Qf`, no mixing of modes
+    with different `Q`: isotropic, or uniaxial in an azimuthally symmetric
+    stack) this class depends on `ζ = z' − zpos` only;
+  - `:hankel`    -- same layer: the cross-branch reflected terms (b→f, f→b),
+    `∝ e^{iQf(zpos+z')}` and `e^{iQf(2d−zpos−z')}`, functions of `σ = zpos + z'` only.
+
+`:toeplitz + :hankel = :all` exactly, on any medium; only the ζ/σ-only dependence
+needs the symmetry above.
+"""
+function _term_amplitudes(cache, obs_layer::Int, zsrc_local::Real, Δz_box::Real, terms::Symbol)
+    same = obs_layer == cache.source_layer
+    if terms in (:toeplitz, :hankel, :direct) && !same
+        error("closed_form_G: terms=:$terms needs obs_layer == source_layer ($(cache.source_layer)), got $obs_layer")
+    end
+    if terms === :all || terms === :scattered
+        Af, Ab = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box)
+        return Af, Ab, same && terms === :all
+    elseif terms === :direct
+        Af, Ab = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box, seeds=:f)
+        return zero(Af), zero(Ab), true
+    elseif terms === :toeplitz || terms === :hankel
+        Aff, Abf = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box, seeds=:f)
+        Afb, Abb = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box, seeds=:b)
+        return terms === :toeplitz ? (Aff, Abb, true) : (Afb, Abf, false)
+    end
+    error("closed_form_G: terms must be :all, :direct, :scattered, :toeplitz or :hankel (got :$terms)")
+end
+
 """
     amplitude_at(cache, obs_layer, zsrc_local; Δz_box=0.0) -> (Af, Ab)
 
@@ -123,7 +172,8 @@ the seed exponentials `Ψ` become `D·Ψ` in face-difference form (`_boxphase`),
 exact for every reflected/transmitted term. `Δz_box = 0` is the point source,
 bit-identical to the pre-box code path.
 """
-function amplitude_at(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::Real; Δz_box::Real=0.0)
+function amplitude_at(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::Real; Δz_box::Real=0.0,
+                      seeds::Symbol=:all)
     haskey(cache.T, obs_layer) || error("amplitude_at: obs_layer=$obs_layer not in this cache's obs_layers $(cache.obs_layers)")
     zpos = _zpos(cache, zsrc_local)
     d    = cache.d_src
@@ -134,6 +184,7 @@ function amplitude_at(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::
     Tv = cache.T[obs_layer]
     Tok = cache.Tvalid[obs_layer]
     Nk = length(cache.kx_nodes)
+    uf, ub = _seed_mask(seeds)
     Af = zeros(ComplexF64, Nk, 2, 3)
     Ab = zeros(ComplexF64, Nk, 2, 3)
     @inbounds for k in 1:Nk
@@ -141,8 +192,8 @@ function amplitude_at(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::
         Qf, Qb = cache.Qf_src[k], cache.Qb_src[k]
         Ψf, Ψb = _seed_phases(Qf, Qb, d, zpos, Δz)
         for q in 1:3
-            u = SVector(cache.sf[k][1, q] * Ψf[1], cache.sf[k][2, q] * Ψf[2],
-                        cache.sb[k][1, q] * Ψb[1], cache.sb[k][2, q] * Ψb[2])
+            u = SVector(uf * cache.sf[k][1, q] * Ψf[1], uf * cache.sf[k][2, q] * Ψf[2],
+                        ub * cache.sb[k][1, q] * Ψb[1], ub * cache.sb[k][2, q] * Ψb[2])
             v = Tv[k] * u
             Af[k, 1, q] = v[1]; Af[k, 2, q] = v[2]
             Ab[k, 1, q] = v[3]; Ab[k, 2, q] = v[4]
@@ -377,18 +428,19 @@ trailing 3×3 is the field of a unit canonical moment `q ∈ {x̂,ŷ,ẑ}` --
 
 `amplitude_at` runs once; in the same layer, `direct_amplitude` adds the
 branch per z-row (cheap, `O(Nk)`); the Bessel row cache is shared by every
-z-row and moment.
+z-row and moment. `terms` keeps one class of terms only (`:all`, `:direct`,
+`:scattered`, `:toeplitz`, `:hankel`; see `_term_amplitudes`), as used by
+`mod_GreenOperator.jl`.
 """
 function closed_form_G(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::Real,
                        z_obs::AbstractVector{<:Real}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real};
-                       Δz_box::Real=0.0)
+                       Δz_box::Real=0.0, terms::Symbol=:all)
     zo = collect(Float64, z_obs)
     xv = collect(Float64, xs); yv = collect(Float64, ys)
     Nx, Ny, Nz = length(xv), length(yv), length(zo)
     kx = cache.kx_nodes
 
-    Af_r, Ab_r = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box)
-    same = obs_layer == cache.source_layer
+    Af_r, Ab_r, same = _term_amplitudes(cache, obs_layer, zsrc_local, Δz_box, terms)
     mc_refl = same ? nothing : _weighted_mcache(cache, obs_layer, Af_r, Ab_r)
 
     # The pixel integral depends on the offset only through ρ and an in-plane rotation:
@@ -484,7 +536,8 @@ canonical moment), reflected/transmitted part only. `Δz_box` as in the 1D metho
 the per-mode `D` is sampled at each node's own `Qf,src[n]`/`Qb,src[n]`, so it is
 exact for biaxial/gyrotropic layers too (`Qf₁ ≠ Qf₂ ≠ −Qb`).
 """
-function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::Real; Δz_box::Real=0.0)
+function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::Real; Δz_box::Real=0.0,
+                      seeds::Symbol=:all)
     haskey(cache.T, obs_layer) || error("amplitude_at: obs_layer=$obs_layer not in this cache's obs_layers $(cache.obs_layers)")
     zpos = _zpos(cache, zsrc_local)
     d    = cache.d_src
@@ -495,6 +548,7 @@ function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::
     Af = zeros(ComplexF64, Nk, Np, 2, 3)
     Ab = zeros(ComplexF64, Nk, Np, 2, 3)
     Tv, Tok = cache.T[obs_layer], cache.Tvalid[obs_layer]
+    uf, ub = _seed_mask(seeds)
     @threads for p in 1:Np
     @inbounds for k in 1:Nk
         (cache.valid[k, p] && Tok[k, p]) || continue
@@ -502,7 +556,7 @@ function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::
         Ψf, Ψb = _seed_phases(Qf, Qb, d, zpos, Δz)
         sfk, sbk, Tk = cache.sf[k, p], cache.sb[k, p], Tv[k, p]
         for q in 1:3
-            v = Tk * SVector(sfk[1, q] * Ψf[1], sfk[2, q] * Ψf[2], sbk[1, q] * Ψb[1], sbk[2, q] * Ψb[2])
+            v = Tk * SVector(uf * sfk[1, q] * Ψf[1], uf * sfk[2, q] * Ψf[2], ub * sbk[1, q] * Ψb[1], ub * sbk[2, q] * Ψb[2])
             Af[k, p, 1, q] = v[1]; Af[k, p, 2, q] = v[2]
             Ab[k, p, 1, q] = v[3]; Ab[k, p, 2, q] = v[4]
         end
@@ -635,7 +689,7 @@ end
 
 """
     closed_form_G(cache::CavityTransferCache2D, obs_layer, zsrc_local, z_obs, xs, ys;
-                  box_lateral=nothing, lateral=:direct, nufft_eps=1e-9)
+                  box_lateral=nothing, lateral=:direct, nufft_eps=1e-9, terms=:all)
         -> Array{ComplexF64,5}   # (Nx, Ny, Nz, field component, moment)
 
 2D-path Green's tensor, same layout as the 1D method. A box source is
@@ -648,6 +702,8 @@ interior face ramps (`interior_slab_at`) plus the local `Ez` (`ez_local_density`
 
 `lateral=:direct` evaluates `Σ_n s_n e^{i(kx_n x_i + ky_n y_j)}` exactly, as
 `Pxᵀ·diag(s)·Py` (separable phases, one matrix product per (component, moment));
+`terms` keeps one class of terms only (`:all`, `:direct`, `:scattered`,
+`:toeplitz`, `:hankel`; see `_term_amplitudes`), as used by `mod_GreenOperator.jl`.
 `lateral=:nufft` uses the ported type-1 NUFFT (uniform `xs`/`ys` required),
 accuracy `nufft_eps` (default 1e-9: ~5e-10 relative, well below the quadrature
 `rtol`; 1e-12 costs ~25% more).
@@ -655,7 +711,8 @@ accuracy `nufft_eps` (default 1e-9: ~5e-10 relative, well below the quadrature
 function closed_form_G(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::Real,
                        z_obs::AbstractVector{<:Real}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real};
                        box_lateral::Union{Nothing,Tuple{<:Real,<:Real}}=nothing, Δz_box::Real=0.0,
-                       ez_local::Bool=true, lateral::Symbol=:direct, nufft_eps::Float64=1e-9)
+                       ez_local::Bool=true, lateral::Symbol=:direct, nufft_eps::Float64=1e-9,
+                       terms::Symbol=:all)
     lateral in (:direct, :nufft) || error("closed_form_G: lateral must be :direct or :nufft")
     zo = collect(Float64, z_obs)
     xv = collect(Float64, xs); yv = collect(Float64, ys)
@@ -669,8 +726,7 @@ function closed_form_G(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local:
         W .*= box_lateral_factor.(kxn, kyn, Float64(box_lateral[1]), Float64(box_lateral[2]))
     end
 
-    Af_r, Ab_r = amplitude_at(cache, obs_layer, zsrc_local; Δz_box=Δz_box)
-    same = obs_layer == cache.source_layer
+    Af_r, Ab_r, same = _term_amplitudes(cache, obs_layer, zsrc_local, Δz_box, terms)
     B = cache.basis[obs_layer]
     d = cache.d_obs[obs_layer]
     zpos = _zpos(cache, zsrc_local)
