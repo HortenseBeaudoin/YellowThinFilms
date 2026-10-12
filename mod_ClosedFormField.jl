@@ -247,23 +247,21 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-`(J0,J1,J2)(kx·ρ)` for every pixel `(i,j)` and node, shared by every z-row and moment.
+`(J0,J1,J2)(kx·ρ)` for every node and every DISTINCT radius `ρs[r]`, `Nk×Nρ`
+(column `r` contiguous), shared by every z-row and moment.
 """
-function _build_bessel_row_cache_vol(kx_nodes::Vector{Float64}, ρs::Matrix{Float64})
-    Nx, Ny = size(ρs)
-    Nk = length(kx_nodes)
-    J0 = Array{Float64,3}(undef, Nx, Ny, Nk)
-    J1 = Array{Float64,3}(undef, Nx, Ny, Nk)
-    J2 = Array{Float64,3}(undef, Nx, Ny, Nk)
-    @threads for idx in 1:(Nx * Ny)
-        i  = (idx - 1) ÷ Ny + 1
-        iy = (idx - 1) % Ny + 1
-        ρ = ρs[i, iy]
+function _build_bessel_row_cache_vol(kx_nodes::Vector{Float64}, ρs::Vector{Float64})
+    Nk, Nρ = length(kx_nodes), length(ρs)
+    J0 = Matrix{Float64}(undef, Nk, Nρ)
+    J1 = Matrix{Float64}(undef, Nk, Nρ)
+    J2 = Matrix{Float64}(undef, Nk, Nρ)
+    @threads for r in 1:Nρ
+        ρ = ρs[r]
         @inbounds for k in 1:Nk
             kρ = kx_nodes[k] * ρ
-            J0[i, iy, k] = besselj0(kρ)
-            J1[i, iy, k] = besselj1(kρ)
-            J2[i, iy, k] = besselj(2, kρ)
+            J0[k, r] = besselj0(kρ)
+            J1[k, r] = besselj1(kρ)
+            J2[k, r] = besselj(2, kρ)
         end
     end
     return J0, J1, J2
@@ -393,10 +391,19 @@ function closed_form_G(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local:
     same = obs_layer == cache.source_layer
     mc_refl = same ? nothing : _weighted_mcache(cache, obs_layer, Af_r, Ab_r)
 
-    ρs = [hypot(xv[i], yv[j]) for i in 1:Nx, j in 1:Ny]
-    J0, J1, J2 = _build_bessel_row_cache_vol(kx, ρs)
+    # The pixel integral depends on the offset only through ρ and an in-plane rotation:
+    # G(ρ,ψ) = Rot(ψ)·R(ρ)·Rot(ψ)ᵀ, with R the 3×3 response in the frame where the pixel
+    # lies on the local x-axis (columns: unit moments along par, perp, z). R is computed
+    # once per DISTINCT radius (square grids: ~8× fewer than pixels), then rotated per pixel.
+    ρpix = [hypot(xv[i], yv[j]) for i in 1:Nx, j in 1:Ny]
+    uρ = unique(ρpix)
+    ridx = Dict(ρ => r for (r, ρ) in enumerate(uρ))
+    rmap = [ridx[ρpix[i, j]] for i in 1:Nx, j in 1:Ny]
+    Nρ = length(uρ)
+    J0, J1, J2 = _build_bessel_row_cache_vol(kx, uρ)
 
     G = Array{ComplexF64,5}(undef, Nx, Ny, Nz, 3, 3)
+    R = Array{ComplexF64,3}(undef, 3, 3, Nρ)
     for zi in 1:Nz
         mc, Φf, Φb = if same
             Ãf, Ãb = _phased_same_layer(cache, Af_r, Ab_r, zsrc_local, zo[zi]; Δz_box=Δz_box)
@@ -404,15 +411,23 @@ function closed_form_G(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local:
         else
             (mc_refl, _obs_phases(mc_refl, zo[zi])...)
         end
-        @threads for idx in 1:(Nx * Ny)
-            i = (idx - 1) ÷ Ny + 1
-            j = (idx - 1) % Ny + 1
-            J0r = @view J0[i, j, :]; J1r = @view J1[i, j, :]; J2r = @view J2[i, j, :]
+        @threads for r in 1:Nρ
+            ρ = uρ[r]
+            J0r = @view J0[:, r]; J1r = @view J1[:, r]; J2r = @view J2[:, r]
             for (q, p) in enumerate(_MOMENTS)
-                vx, vy, vz = _integrate_pixel_rotated_1d(mc, xv[i], yv[j], Φf, Φb, kx, J0r, J1r, J2r, p[1], p[2], p[3])
-                G[i, j, zi, 1, q] = vx
-                G[i, j, zi, 2, q] = vy
-                G[i, j, zi, 3, q] = vz
+                v = _integrate_pixel_1d(mc, ρ, ρ, Φf, Φb, kx, J0r, J1r, J2r, p[1], p[2], p[3])
+                R[1, q, r] = v[1]; R[2, q, r] = v[2]; R[3, q, r] = v[3]
+            end
+        end
+        @threads for j in 1:Ny
+            @inbounds for i in 1:Nx
+                ρ = ρpix[i, j]
+                cψ, sψ = ρ == 0.0 ? (1.0, 0.0) : (xv[i] / ρ, yv[j] / ρ)
+                Rot = SMatrix{3,3,Float64}(cψ, sψ, 0.0, -sψ, cψ, 0.0, 0.0, 0.0, 1.0)
+                M = Rot * SMatrix{3,3,ComplexF64}(view(R, :, :, rmap[i, j])) * transpose(Rot)
+                for q in 1:3, c in 1:3
+                    G[i, j, zi, c, q] = M[c, q]
+                end
             end
         end
     end
@@ -480,7 +495,8 @@ function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::
     Af = zeros(ComplexF64, Nk, Np, 2, 3)
     Ab = zeros(ComplexF64, Nk, Np, 2, 3)
     Tv, Tok = cache.T[obs_layer], cache.Tvalid[obs_layer]
-    @inbounds for p in 1:Np, k in 1:Nk
+    @threads for p in 1:Np
+    @inbounds for k in 1:Nk
         (cache.valid[k, p] && Tok[k, p]) || continue
         Qf, Qb = cache.Qf_src[k, p], cache.Qb_src[k, p]
         Ψf, Ψb = _seed_phases(Qf, Qb, d, zpos, Δz)
@@ -490,6 +506,7 @@ function amplitude_at(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::
             Af[k, p, 1, q] = v[1]; Af[k, p, 2, q] = v[2]
             Ab[k, p, 1, q] = v[3]; Ab[k, p, 2, q] = v[4]
         end
+    end
     end
     return Af, Ab
 end
@@ -513,11 +530,12 @@ function direct_amplitude(cache::CavityTransferCache2D, zsrc_local::Real, z_obs:
     Ab = zeros(ComplexF64, Nk, Np, 2, 3)
     fwd, bwd = _direct_branch(ζ, Δz)
     (fwd || bwd) || return Af, Ab
-    @inbounds for p in 1:Np, k in 1:Nk
+    A = fwd ? Af : Ab
+    @threads for p in 1:Np
+    @inbounds for k in 1:Nk
         cache.valid[k, p] || continue
         Q = fwd ? cache.Qf_src[k, p] : cache.Qb_src[k, p]
         s = fwd ? cache.sf[k, p] : cache.sb[k, p]
-        A = fwd ? Af : Ab
         for m in 1:2
             e = _boxphase(ComplexF64(Q[m]), ζ, Δz)
             for q in 1:3
@@ -525,29 +543,63 @@ function direct_amplitude(cache::CavityTransferCache2D, zsrc_local::Real, z_obs:
             end
         end
     end
+    end
     return Af, Ab
 end
 
 """
-Per-node strengths for one z-row: `s[n, c, q] = w_n · Σ_m (E_c,f · Ãf + E_c,b · Ãb)[n, m, q]`,
-`n` the flattened `(k,p)` node (k fastest), `c ∈ x,y,z`, `q` the canonical moment,
-with `Ã` the amplitudes already multiplied by their observation-plane phase and
-`w_n = i·kρ·wρ·wφ·ω/(8π³) · S_n` (quadrature weight times the box lateral factor).
-Non-finite weighted amplitudes are zeroed.
+Per-node strengths for one z-row, written into `S` (`Nn×3×3`):
+`S[n, c, q] = Σ_m (E_c,f · w_n Ãf + E_c,b · w_n Ãb)[n, m, q]`, `n` the flattened
+`(k,p)` node (k fastest), `c ∈ x,y,z`, `q` the canonical moment, where
+`Ãf = Af_r·e^{iKZf·z'} (+ Afd)` and `Ãb = Ab_r·e^{iKZb·(z'−d)} (+ Abd)` are the
+reflected amplitudes moved to the observation plane plus, in the source layer,
+the direct ones (`Afd/Abd`, `nothing` otherwise), and `w_n` the node weight
+(quadrature × box lateral factor, × the NUFFT ramp on that path). Non-finite
+weighted amplitudes are zeroed. `ezl` (or `nothing`) adds the local `Ez`
+`w_n·ezl[q]` on valid nodes. One fused pass, threaded over φ columns; each
+observation phase is evaluated once per (node, mode).
 """
-function _strengths_2d(cache::CavityTransferCache2D, obs_layer::Int, Ãf::Array{ComplexF64,4}, Ãb::Array{ComplexF64,4},
-                       W::Vector{ComplexF64})
-    B = cache.basis[obs_layer]
+function _strengths_row!(S::Array{ComplexF64,3}, cache::CavityTransferCache2D, B, Af_r, Ab_r, Afd, Abd,
+                         W::Vector{ComplexF64}, z::Float64, d::Float64, ezl)
     Nk, Np = size(cache.valid)
-    Nn = Nk * Np
-    S = zeros(ComplexF64, Nn, 3, 3)
-    @inbounds for q in 1:3, m in 1:2, p in 1:Np, k in 1:Nk
+    @threads for p in 1:Np
+    @inbounds for k in 1:Nk
         n = k + (p - 1) * Nk
-        af = _finite_or_zero(W[n] * Ãf[k, p, m, q])
-        ab = _finite_or_zero(W[n] * Ãb[k, p, m, q])
-        S[n, 1, q] += B.Exf[k, p, m] * af + B.Exb[k, p, m] * ab
-        S[n, 2, q] += B.Eyf[k, p, m] * af + B.Eyb[k, p, m] * ab
-        S[n, 3, q] += B.Ezf[k, p, m] * af + B.Ezb[k, p, m] * ab
+        w = W[n]
+        s11 = s21 = s31 = s12 = s22 = s32 = s13 = s23 = s33 = zero(ComplexF64)
+        for m in 1:2
+            φf = _phase(B.KZf[k, p, m], z)
+            φb = _phase(B.KZb[k, p, m], z - d)
+            exf, eyf, ezf = B.Exf[k, p, m], B.Eyf[k, p, m], B.Ezf[k, p, m]
+            exb, eyb, ezb = B.Exb[k, p, m], B.Eyb[k, p, m], B.Ezb[k, p, m]
+            for q in 1:3
+                ãf = Af_r[k, p, m, q] * φf
+                ãb = Ab_r[k, p, m, q] * φb
+                if Afd !== nothing
+                    ãf += Afd[k, p, m, q]
+                    ãb += Abd[k, p, m, q]
+                end
+                af = _finite_or_zero(w * ãf)
+                ab = _finite_or_zero(w * ãb)
+                vx = exf * af + exb * ab
+                vy = eyf * af + eyb * ab
+                vz = ezf * af + ezb * ab
+                if q == 1
+                    s11 += vx; s21 += vy; s31 += vz
+                elseif q == 2
+                    s12 += vx; s22 += vy; s32 += vz
+                else
+                    s13 += vx; s23 += vy; s33 += vz
+                end
+            end
+        end
+        if ezl !== nothing && cache.valid[k, p]
+            s31 += w * ezl[1]; s32 += w * ezl[2]; s33 += w * ezl[3]
+        end
+        S[n, 1, 1] = s11; S[n, 2, 1] = s21; S[n, 3, 1] = s31
+        S[n, 1, 2] = s12; S[n, 2, 2] = s22; S[n, 3, 2] = s32
+        S[n, 1, 3] = s13; S[n, 2, 3] = s23; S[n, 3, 3] = s33
+    end
     end
     return S
 end
@@ -583,7 +635,7 @@ end
 
 """
     closed_form_G(cache::CavityTransferCache2D, obs_layer, zsrc_local, z_obs, xs, ys;
-                  box_lateral=nothing, lateral=:direct, nufft_eps=1e-12)
+                  box_lateral=nothing, lateral=:direct, nufft_eps=1e-9)
         -> Array{ComplexF64,5}   # (Nx, Ny, Nz, field component, moment)
 
 2D-path Green's tensor, same layout as the 1D method. A box source is
@@ -597,12 +649,13 @@ interior face ramps (`interior_slab_at`) plus the local `Ez` (`ez_local_density`
 `lateral=:direct` evaluates `Σ_n s_n e^{i(kx_n x_i + ky_n y_j)}` exactly, as
 `Pxᵀ·diag(s)·Py` (separable phases, one matrix product per (component, moment));
 `lateral=:nufft` uses the ported type-1 NUFFT (uniform `xs`/`ys` required),
-accuracy `nufft_eps`.
+accuracy `nufft_eps` (default 1e-9: ~5e-10 relative, well below the quadrature
+`rtol`; 1e-12 costs ~25% more).
 """
 function closed_form_G(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local::Real,
                        z_obs::AbstractVector{<:Real}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real};
                        box_lateral::Union{Nothing,Tuple{<:Real,<:Real}}=nothing, Δz_box::Real=0.0,
-                       ez_local::Bool=true, lateral::Symbol=:direct, nufft_eps::Float64=1e-12)
+                       ez_local::Bool=true, lateral::Symbol=:direct, nufft_eps::Float64=1e-9)
     lateral in (:direct, :nufft) || error("closed_form_G: lateral must be :direct or :nufft")
     zo = collect(Float64, z_obs)
     xv = collect(Float64, xs); yv = collect(Float64, ys)
@@ -620,57 +673,53 @@ function closed_form_G(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local:
     same = obs_layer == cache.source_layer
     B = cache.basis[obs_layer]
     d = cache.d_obs[obs_layer]
+    zpos = _zpos(cache, zsrc_local)
+    ezl = ez_local_density(cache, Δz_box)
 
-    # lateral transform setup (z-independent)
-    Px = Py = nothing
-    nodes = nothing
+    G = Array{ComplexF64,5}(undef, Nx, Ny, Nz, 3, 3)
+    S = Array{ComplexF64,3}(undef, Nk * Np, 3, 3)
+    row_strengths!(z) = begin
+        Afd, Abd = same ? direct_amplitude(cache, zsrc_local, z; Δz_box=Δz_box) : (nothing, nothing)
+        inside = same && ez_local && Δz_box > 0 && abs(z - zpos) < Δz_box / 2
+        _strengths_row!(S, cache, B, Af_r, Ab_r, Afd, Abd, W, z, d, inside ? ezl : nothing)
+    end
+
     if lateral === :direct
         Px = [cis(kxn[n] * xv[i]) for n in eachindex(kxn), i in 1:Nx]
         Py = [cis(kyn[n] * yv[j]) for n in eachindex(kyn), j in 1:Ny]
-    else
-        cx, cy = 1 + fld(Nx, 2), 1 + fld(Ny, 2)
-        pxp = Nx > 1 ? xv[2] - xv[1] : 1.0
-        pyp = Ny > 1 ? yv[2] - yv[1] : 1.0
-        nodes = _nufft_nodes_2d(cache.kρ_nodes, cache.phi_nodes, pxp, pyp, Nx, Ny,
-                                Float64(cx), Float64(cy); x0=-xv[cx], y0=-yv[cy])
-    end
-
-    G = Array{ComplexF64,5}(undef, Nx, Ny, Nz, 3, 3)
-    Ãf = similar(Af_r); Ãb = similar(Ab_r)
-    for zi in 1:Nz
-        @inbounds for q in 1:3, m in 1:2, p in 1:Np, k in 1:Nk
-            Ãf[k, p, m, q] = Af_r[k, p, m, q] * _phase(B.KZf[k, p, m], zo[zi])
-            Ãb[k, p, m, q] = Ab_r[k, p, m, q] * _phase(B.KZb[k, p, m], zo[zi] - d)
-        end
-        if same
-            Afd, Abd = direct_amplitude(cache, zsrc_local, zo[zi]; Δz_box=Δz_box)
-            Ãf .+= Afd; Ãb .+= Abd
-        end
-        S = _strengths_2d(cache, obs_layer, Ãf, Ãb, W)
-        if same && ez_local && Δz_box > 0 && abs(zo[zi] - _zpos(cache, zsrc_local)) < Δz_box / 2
-            ezl = ez_local_density(cache, Δz_box)
-            @inbounds for p in 1:Np, k in 1:Nk
-                cache.valid[k, p] || continue
-                n = k + (p - 1) * Nk
-                for q in 1:3
-                    S[n, 3, q] += W[n] * ezl[q]
-                end
-            end
-        end
-        if lateral === :direct
-            PxT = transpose(Px)
+        PxT = transpose(Px)
+        for zi in 1:Nz
+            row_strengths!(zo[zi])
             @threads for cq in 1:9
                 c, q = (cq - 1) % 3 + 1, (cq - 1) ÷ 3 + 1
                 G[:, :, zi, c, q] .= PxT * (view(S, :, c, q) .* Py)
             end
-        else
-            kx_flat, ky_flat, ramp = nodes
-            Sr = reshape(S, :, 9) .* ramp
-            F = nufft2d1(kx_flat, ky_flat, Sr, 1, nufft_eps, Nx, Ny)
-            for cq in 1:9
-                c, q = (cq - 1) % 3 + 1, (cq - 1) ÷ 3 + 1
-                G[:, :, zi, c, q] .= view(F, :, :, cq)
+        end
+    else
+        # One FINUFFT plan for every row: the nodes are z-independent, so they are
+        # sorted/spread-prepared once (setpts) and each row is one 9-vector execute.
+        # The z-independent ramp is folded into the node weights.
+        cx, cy = 1 + fld(Nx, 2), 1 + fld(Ny, 2)
+        pxp = Nx > 1 ? xv[2] - xv[1] : 1.0
+        pyp = Ny > 1 ? yv[2] - yv[1] : 1.0
+        kx_flat, ky_flat, ramp = _nufft_nodes_2d(cache.kρ_nodes, cache.phi_nodes, pxp, pyp, Nx, Ny,
+                                                 Float64(cx), Float64(cy); x0=-xv[cx], y0=-yv[cy])
+        W .*= ramp
+        F = Array{ComplexF64,3}(undef, Nx, Ny, 9)
+        plan = finufft_makeplan(1, [Nx, Ny], 1, 9, nufft_eps)
+        try
+            finufft_setpts!(plan, kx_flat, ky_flat)
+            Sr = reshape(S, :, 9)
+            for zi in 1:Nz
+                row_strengths!(zo[zi])
+                finufft_exec!(plan, Sr, F)
+                for cq in 1:9
+                    c, q = (cq - 1) % 3 + 1, (cq - 1) ÷ 3 + 1
+                    G[:, :, zi, c, q] .= view(F, :, :, cq)
+                end
             end
+        finally
+            finufft_destroy!(plan)
         end
     end
     return G
@@ -720,7 +769,8 @@ function interior_slab_at(cache::CavityTransferCache2D, zsrc_local::Real, z_obs:
     Nk, Np = size(cache.valid)
     Af = zeros(ComplexF64, Nk, Np, 2, 3)
     Ab = zeros(ComplexF64, Nk, Np, 2, 3)
-    @inbounds for p in 1:Np, k in 1:Nk
+    @threads for p in 1:Np
+    @inbounds for k in 1:Nk
         cache.valid[k, p] || continue
         Qf, Qb = cache.Qf_src[k, p], cache.Qb_src[k, p]
         for m in 1:2
@@ -731,6 +781,7 @@ function interior_slab_at(cache::CavityTransferCache2D, zsrc_local::Real, z_obs:
                 Ab[k, p, m, q] = cache.sb[k, p][m, q] * rb
             end
         end
+    end
     end
     return Af, Ab
 end

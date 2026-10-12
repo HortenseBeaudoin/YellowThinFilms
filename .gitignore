@@ -1,0 +1,8 @@
+# generated outputs (regenerable; see STATUS_closed_form_rewrite.md)
+Gz_ClosedForm_SourcePlane.png
+ShapeCompare_figs/
+figures/
+logs/
+field_cache/
+greens_cache/
+.DS_Store

@@ -106,7 +106,7 @@ for src in 1:3
         zo = obs == src ? [0.05 * stack_u[obs].d, 0.95 * stack_u[obs].d] : [0.3 * stack_u[obs].d]
         Gr = closed_form_G(cr, obs, zs, zo, x5, y5)
         e = max(relerr(Gr, closed_form_G(cf, obs, zs, zo, x5, y5)), relerr(Gr, closed_form_G(c1d, obs, zs, zo, x5, y5)))
-        en = relerr(closed_form_G(cr, obs, zs, zo, x5, y5; lateral=:nufft), Gr)
+        en = relerr(closed_form_G(cr, obs, zs, zo, x5, y5; lateral=:nufft, nufft_eps=1e-12), Gr)
         global worst_c = max(worst_c, e); global worst_nu = max(worst_nu, en)
     end
 end
