@@ -67,6 +67,19 @@ The project now lives in a clone of the GitHub repository (this folder). The val
   - layer 1 → 2 (48×16): dense, 972 MB, 21 s;
   - apply, full layer-1 source volume (110k voxels) → layers 1 + 2: 0.08 s;
   - per-depth route: 101 s, 3.9 GB.
+- **`box_kρ_grid` memory (2026-10-13).** It kept a full one-kρ cache per visited kρ (≈ 0.45 MB at 256 φ without the rotation shortcut, 10⁴–10⁵ kρ), which ran out of 16 GB on biaxial stacks. It now memoizes the probe values only (probes threaded per kρ). Bit-identical grids; 4.8 → 1.15 GB on the biaxial check.
+- **Benchmark (2026-10-13, `Bench_GreenOperator.jl`, informal, 4 threads).** Box source in layer 2 (0.5 thick), outer layers 0.5, all layers observed; Δ = voxel side, 2λ × 2λ window. Max-precision quadrature: `box_kρ_grid` rtol 1e-3, `kρ_cap` 3000, `ρ_far` 1, 256 φ, `nufft_eps` 1e-12; cache + operator built in chunks of 64 φ and summed (exact). Rows in `logs/bench_green_operator.csv`.
+
+  | stack | S: 16²×4 (Δ=1/8) | M: 32²×8 | L: 64²×16 (Δ=1/32) | apply, full volume S / M / L |
+  |---|---|---|---|---|
+  | iso vac/glass/vac | 26 s, 7 MB | 74 s, 89 MB | 261 s, 1.3 GB | 0.8 / 6.6 / 90 ms |
+  | uni vac/uni/glass/vac | 40 s, 8 MB | 187 s, 107 MB | 339 s, 1.6 GB | 1.2 / 7.5 / 122 ms |
+  | hyperbolic biaxial, εzz = −3.2+0.01i | 74 s, 8 MB | 153 s, 116 MB | 445 s, 1.8 GB | 0.8 / 6.4 / 129 ms |
+
+  - Precompute = grid + cache + operator build. At L, 85–90% is the operator build, ≈ 100–140 s per dense / toeplitz_dense block vs 30 s for the structured block.
+  - Apply cost does not depend on the number of non-zero sources (1, one per plane, or every voxel: same time).
+  - εzz = −1 is a bad hyperbolic test against vacuum (ε + 1 = 0, plasmon condition): the far-lateral probe's tail stalls. At −3.2 everything converges.
+  - Biaxial εzz = +2+0.3i (Gila R3) is not in the table: see open items.
 - **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3). The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
 
 ## Changes since 2026-09-24
@@ -196,6 +209,8 @@ Code and physics:
 - **Speed-up of the 2D box materialization.** It is 60–110 s on the 60-row ShapeCompare volume, spent in the per-row phase/strength loops over ~375–600k nodes plus 9 NUFFTs per row.
 - `CavityTransferCache2D`'s full-solve branch could use a y-mirror shortcut (≈2× fewer solves for mirror-symmetric biaxial stacks).
 - §5.4 (observation-voxel averaging) is not done. Gila's field is a voxel collocation, while the own field is sampled at voxel centres; this matters most next to the source.
+- **Lossless stacks are not supported.** The kρ quadrature runs on the real axis (breaks at the light lines only, no contour deformation or pole extraction), so lossless guided-mode poles sit on the path. On lossless iso and uni stacks every `box_kρ_grid` probe's finite band stalls (panels down to ~1e-13). `box_kρ_grid` still returns a grid, with only a warning. Options: pole extraction (PV + iπ·residue, analytic per pole; keeps the real-axis grid and the NUFFT), contour deformation (needs complex kρ, so the FINUFFT lateral synthesis would have to change), or limiting absorption (reference only).
+- **Biaxial εzz = +2+0.3i source layer, far-lateral probes.** With `ρ_far = 1` the grid needs 65k kρ at Δ = 1/8 and stalls at Δ = 1/16; with `ρ_far = 0` it converges with 1,290 kρ in 10 s. Only for biaxial does the node count grow with N_phi (7k / 19k / 65k at 8 / 64 / 256 φ). Not the φ resolution (iso is as under-resolved at kρρ > 256 and converges) and not mode-solve jumps (single-φ integrands are smooth in kρ, including φ = 0, π/2). Unexplained.
 - **Near-source φ resolution.** Uniform φ with `N_phi ≳ kρ·ρ` is wasteful at low kρ. A kρ-dependent φ count per node (the cache is a product grid today) would replace the near/far split and the chunking.
 
 Gila comparison:
