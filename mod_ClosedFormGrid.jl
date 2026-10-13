@@ -18,7 +18,8 @@ Each probe is a function of kρ alone: the full box Green's tensor at one
 probe point, evaluated through the SAME synthesis the field uses
 (`closed_form_G` on a one-kρ-node `CavityTransferCache2D`, φ-summed on the
 fixed φ grid), so what is converged is exactly what is later integrated. The
-per-kρ cache is memoized and shared by every probe. `KxGrid.adaptive_kx_grid`
+per-kρ cache is built once and evaluated at every probe; the probe values are
+memoized (not the cache, which is too large to keep for every visited kρ). `KxGrid.adaptive_kx_grid`
 (kept as-is) does the h-adaptive Gauss–Kronrod refinement, per probe, and
 merges the panel boundaries.
 
@@ -53,6 +54,7 @@ import ..ModeSolver: AbstractLayer
 import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer
 import ..CavityTransfer: build_cavity_transfer_1d, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G, closed_form_pixel
+using Base.Threads
 
 """
     box_tail_cutoff(Δ, rtol) -> K
@@ -123,17 +125,24 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
     end
     obs_layers = sort(unique(p[1] for p in probes))
 
-    # one-kρ-node cache per kρ, shared by every probe
-    memo = Dict{Float64,Any}()
-    cache_at(kρ) = get!(memo, kρ) do
-        build_cavity_transfer_2d(stack, ωf, source_layer, [kρ], [1.0], φs, wφ; obs_layers=obs_layers)
-    end
-    function probe_fn(p)
+    # one-kρ-node cache per kρ, evaluated at every probe at once (threaded); only the probe values
+    # are memoized (a 2D cache is ~0.5 MB at 256 φ without the rotation shortcut, and the
+    # quadrature visits 10^4–10^5 kρ)
+    function probe_val(c, p)
         obs, zo, px, py, _, (z̄, _) = p
         # closed_form_G takes the SOURCE depth in the caller's frame and z_obs in the obs layer's frame
-        return kρ -> vec(closed_form_G(cache_at(kρ), obs, z̄, [zo], [px], [py]; box_lateral=(Δx, Δy), Δz_box=Δz))
+        return vec(closed_form_G(c, obs, z̄, [zo], [px], [py]; box_lateral=(Δx, Δy), Δz_box=Δz))
     end
-    fs = Any[probe_fn(p) for p in probes]
+    memo = Dict{Float64,Vector{Vector{ComplexF64}}}()
+    vals_at(kρ) = get!(memo, kρ) do
+        c = build_cavity_transfer_2d(stack, ωf, source_layer, [kρ], [1.0], φs, wφ; obs_layers=obs_layers)
+        v = Vector{Vector{ComplexF64}}(undef, length(probes))
+        @threads for i in eachindex(probes)         # the cache is read-only in closed_form_G
+            v[i] = probe_val(c, probes[i])
+        end
+        v
+    end
+    fs = Any[(kρ -> vals_at(kρ)[i]) for i in eachindex(probes)]
 
     kbreaks = branch_points(stack, ωf)
     kmax = kbreaks[end]
