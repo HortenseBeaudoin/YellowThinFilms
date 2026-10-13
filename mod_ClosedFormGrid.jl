@@ -45,10 +45,18 @@ bound is set from the tolerance, `log(KΔ)/(KΔ) ≤ rtol`, capped by `kρ_cap`
 (instead of the point grid's fixed `kx_ratio_max = 80`). The φ grid must resolve
 `kρ·ρ` up to that bound for the off-centre probes -- `N_phi` is the caller's.
 The optional quasi-static (Newell) subtraction of §4.2 is not implemented.
+
+Losses. The kρ path is the real axis (breaks at the light lines only, no
+contour deformation or pole extraction), so a lossless stack puts its
+guided-mode poles on the path and the finite bands cannot converge. A fully
+lossless stack gets a warning up front (`is_lossless`); a stalled finite band
+raises (`on_stall=:error`, the default) instead of returning an unconverged
+grid. Iso/uniaxial stacks converge with δ = Im ε ≈ 1e-6 on every layer, ≈ 3e-5
+from the lossless limit (`diagnostics/loss_sweep.jl`).
 """
 module ClosedFormGrid
 
-export point_kx_grid, box_kρ_grid, box_tail_cutoff
+export point_kx_grid, box_kρ_grid, box_tail_cutoff, is_lossless
 
 import ..ModeSolver: AbstractLayer
 import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer
@@ -71,9 +79,19 @@ function box_tail_cutoff(Δ::Real, rtol::Real)
 end
 
 """
+    is_lossless(stack) -> Bool
+
+`true` when no ε (or μ) component of any layer has a nonzero imaginary part:
+the guided-mode poles then sit on the real kρ axis.
+"""
+is_lossless(stack::Vector{<:AbstractLayer}) =
+    all(l -> _lossless(l.ϵ) && (!hasproperty(l, :μ) || _lossless(l.μ)), stack)
+_lossless(m) = all(iszero(imag(m[i, j])) for i in 1:3, j in 1:3)
+
+"""
     box_kρ_grid(stack, ω, source_layer; box, zbar=nothing, N_phi=64, ρ_far=0.0,
                 rtol=1e-4, atol=0.0, kr_order=7, maxevals=10_000, kρ_cap=2000.0,
-                include_interior=true)
+                include_interior=true, on_stall=:error)
         -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
 
 `box = (Δx_box, Δy_box, Δz_box)`. `zbar` (local depths of the box centre in
@@ -83,17 +101,28 @@ drops the inside-the-slab probes (then every probe decays exponentially and the
 point-grid `kx_ratio_max = 80` tail cap is used). `info` merges
 `adaptive_kx_grid`'s info with the probe list, `Leff`, the tail bound and the
 number of distinct kρ solves.
+
+`on_stall`: what to do when a probe's finite bands do not reach `rtol` within
+`maxevals` (real-axis poles of a lossless or nearly lossless stack, or an
+under-resolved probe): `:error` (default) throws, listing the stalled probes;
+`:warn` returns the unconverged grid with `adaptive_kx_grid`'s warnings
+(diagnostics only). A stalled TAIL is not an error: it falls back to
+`adaptive_kx_grid`'s fixed evanescent band, reported in `info.any_tail_stalled`.
 """
 function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                      box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, ρ_far::Real=0.0,
                      rtol::Real=1e-4, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
-                     kρ_cap::Real=2000.0, include_interior::Bool=true)
+                     kρ_cap::Real=2000.0, include_interior::Bool=true, on_stall::Symbol=:error)
+    on_stall in (:error, :warn) || error("box_kρ_grid: on_stall=$on_stall must be :error or :warn")
     N = length(stack)
     (1 <= source_layer < N) || error("box_kρ_grid: source_layer=$source_layer must be in 1:$(N-1)")
     Δx, Δy, Δz = Float64.(box)
     d = stack[source_layer].d
     Δz <= d || error("box_kρ_grid: Δz_box=$Δz does not fit in layer $source_layer (d=$d)")
     ωf = Float64(ω)
+    is_lossless(stack) && @warn "box_kρ_grid: the stack is lossless (no Im ε or Im μ in any layer). The kρ quadrature " *
+        "runs on the real axis, so guided-mode poles sit on the path and the finite bands will likely stall. " *
+        "Add a small loss (Im ε ≈ 1e-6 on every layer converges for iso/uniaxial stacks)."
     φs, wφ = build_kphi_grid(N_phi)
 
     # representative box-centre depths (local, caller's frame), inside the layer
@@ -153,9 +182,20 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
     kx_ratio_max = max(Kcut / kmax, 1.0 + 1e-6)
 
     kρ, wρ, info = adaptive_kx_grid(fs, kbreaks; rtol=Float64(rtol), atol=Float64(atol), kr_order=kr_order,
-                                    maxevals=maxevals, Leff=Leff, kx_ratio_max=kx_ratio_max)
+                                    maxevals=maxevals, Leff=Leff, kx_ratio_max=kx_ratio_max,
+                                    warn_stall=on_stall === :warn)
     info = merge(info, (probes=[(p[1], p[2], p[3], p[4], p[5], p[6][2], p[6][1]) for p in probes],
                         Leff=Leff, tail_bound=Kcut, n_kρ_solves=length(memo)))
+    stalled = [i for i in eachindex(probes) if info.per_probe_fin[i].stalled]
+    if on_stall === :error && !isempty(stalled)
+        list = join(["  layer $(probes[i][1]), z̄ = $(probes[i][6][1]), $(probes[i][6][2]) (error estimate " *
+                     "$(round(info.per_probe_fin[i].E; sigdigits=2)))" for i in stalled], "\n")
+        error("box_kρ_grid: $(length(stalled))/$(length(probes)) probes' finite bands did not reach rtol=$rtol " *
+              "within maxevals=$maxevals:\n$list\n" *
+              (is_lossless(stack) ? "The stack is lossless: real-axis guided-mode poles cannot be integrated; add a small loss. " :
+                                    "Likely near-real poles (low loss) or an under-resolved probe. ") *
+              "Pass on_stall=:warn to get the unconverged grid anyway.")
+    end
     return kρ, wρ, φs, wφ, info
 end
 

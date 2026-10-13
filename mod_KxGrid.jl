@@ -163,7 +163,7 @@ end
 """
     adaptive_kx_grid(fs, kbreaks; rtol=1e-6, atol=0.0, kr_order=7,
                      maxevals=10_000, Leff=1.0, fallback_N=250,
-                     target_decay=25.0, kx_ratio_max=80.0)
+                     target_decay=25.0, kx_ratio_max=80.0, warn_stall=true)
         -> (kx_nodes, wt_nodes, info)
 
 Error-controlled replacement for the old fixed `N_prop`/`N_band`/`N_eva` node
@@ -298,7 +298,8 @@ finite-band domain, so that is where a narrow feature would show up as a
 small accepted panel.
 
 `info` reports `(n_panels_fin, n_nodes, per_probe_fin, per_probe_tail,
-any_tail_stalled, min_panel_width)`: `per_probe_fin`/`per_probe_tail` are
+any_tail_stalled, min_panel_width)` (`warn_stall=false` silences the per-probe
+finite-band stall warning, for a caller that reports stalls itself): `per_probe_fin`/`per_probe_tail` are
 per-probe `(E, stalled)` NamedTuples (achieved error estimate and whether
 that probe's own refinement stalled), so a caller can tell WHICH probe (if
 any) drove the final node count or stalled -- `any_tail_stalled` is the OR
@@ -308,7 +309,7 @@ function adaptive_kx_grid(fs::Vector, kbreaks::Vector{Float64};
                           rtol::Float64=1e-6, atol::Float64=0.0,
                           kr_order::Int=7, maxevals::Int=10_000,
                           Leff::Float64=1.0, fallback_N::Int=250,
-                          target_decay::Float64=25.0, kx_ratio_max::Float64=80.0)
+                          target_decay::Float64=25.0, kx_ratio_max::Float64=80.0, warn_stall::Bool=true)
     isempty(kbreaks) && error("adaptive_kx_grid: kbreaks cannot be empty")
     isempty(fs) && error("adaptive_kx_grid: fs cannot be empty")
     kmax = kbreaks[end]
@@ -321,7 +322,7 @@ function adaptive_kx_grid(fs::Vector, kbreaks::Vector{Float64};
     for (i, f) in enumerate(fs)
         Ifin, Efin, segfin = quadgk_segbuf(f, 0.0, kbreaks...; rtol=rtol, atol=atol, order=kr_order, maxevals=maxevals)
         stalled = Efin > max(atol, rtol * norm(Ifin))
-        stalled && @warn "adaptive_kx_grid: probe $i's finite bands did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals (achieved error estimate $Efin) -- see this function's own docstring's note on lossless poles."
+        stalled && warn_stall && @warn "adaptive_kx_grid: probe $i's finite bands did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals (achieved error estimate $Efin) -- see this function's own docstring's note on lossless poles."
         for s in segfin
             push!(fin_breaks, Float64(s.a))
             push!(fin_breaks, Float64(s.b))

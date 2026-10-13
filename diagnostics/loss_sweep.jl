@@ -38,7 +38,7 @@ for (name, mk) in stacks
         st = mk(δ)
         GC.gc()
         t = @elapsed (kρ, wρ, φ, wφ, info) = box_kρ_grid(st, ω, 2; box=(Δ, Δ, Δ), N_phi=256, rtol=1e-3,
-                                                         kρ_cap=3000.0, ρ_far=1.0, maxevals=200_000)
+                                                         kρ_cap=3000.0, ρ_far=1.0, maxevals=200_000, on_stall=:warn)
         nst = count(p -> p.stalled, info.per_probe_fin) + count(p -> p.stalled, info.per_probe_tail)
         # G summed over φ chunks (exact: linear in the quadrature sum); a full 256-φ biaxial cache does not fit
         G = [zeros(ComplexF64, 1, 1, 1, 3, 3) for _ in pts]

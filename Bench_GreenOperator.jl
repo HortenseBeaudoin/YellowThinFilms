@@ -23,7 +23,7 @@ using LinearAlgebra, Printf, Statistics, Dates, Random
 #   BENCH_SIZES=S,M BENCH_STACKS=iso,uni julia -t auto --project Bench_GreenOperator.jl
 #
 # `biax` (εzz = +2) is opt-in (BENCH_STACKS=biax): its grid needs 65k kρ at S and
-# stalls at M because of the far-lateral probes (STATUS, open items).
+# stalls (box_kρ_grid errors) at M because of the far-lateral probes (STATUS, open items).
 #
 # Appends one row per case to logs/bench_green_operator.csv (git-ignored).
 # ─────────────────────────────────────────────────────────────────────────────
