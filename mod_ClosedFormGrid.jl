@@ -148,7 +148,10 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
         end
         push!(probes, (source_layer + 1, δ, 0.0, 0.0, (d - zp - Δz / 2) + δ, (z̄, "layer below, near interface")))
         if ρ_far > 0
-            push!(probes, (source_layer, zp + Δz / 2 + δ, Float64(ρ_far), 0.0, δ, (z̄, "far lateral")))
+            # just outside the slab, on a side that stays in the layer (a z_obs past the layer's
+            # faces makes the integrand grow like e^{+kρ·overshoot})
+            zf = zp + Δz / 2 + δ <= d ? zp + Δz / 2 + δ : zp - Δz / 2 - δ
+            zf >= 0 && push!(probes, (source_layer, zf, Float64(ρ_far), 0.0, δ, (z̄, "far lateral")))
             include_interior && push!(probes, (source_layer, zp, Float64(ρ_far), 0.0, 0.0, (z̄, "far lateral, inside the slab")))
         end
     end

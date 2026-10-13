@@ -22,8 +22,8 @@ using LinearAlgebra, Printf, Statistics, Dates, Random
 #   julia -t auto --project Bench_GreenOperator.jl            # iso, uni, hyp × S, M, L (~40 min)
 #   BENCH_SIZES=S,M BENCH_STACKS=iso,uni julia -t auto --project Bench_GreenOperator.jl
 #
-# `biax` (εzz = +2) is opt-in (BENCH_STACKS=biax): its grid needs 65k kρ at S and
-# stalls (box_kρ_grid errors) at M because of the far-lateral probes (STATUS, open items).
+# `biax` (εzz = +2) is opt-in (BENCH_STACKS=biax). It needed 65k kρ at S and
+# stalled at M until the far-lateral probe fix of 2026-10-13 (STATUS); 5.7k kρ at S since.
 #
 # Appends one row per case to logs/bench_green_operator.csv (git-ignored).
 # ─────────────────────────────────────────────────────────────────────────────
