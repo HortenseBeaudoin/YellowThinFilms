@@ -89,6 +89,12 @@ The project now lives in a clone of the GitHub repository (this folder). The val
   - Biax εzz = +2+0.3i, ρ_far = 1, Δ = 1/8: 7k / 19k / 65k → 6.0k / 6.1k / 5.7k kρ at 8 / 64 / 256 φ (24 s at 256), same as iso (6.0k / 5.6k / 5.4k). Δ = 1/16, 256 φ: 5.9k kρ in 30 s (stalled before).
   - Accuracy (biax, 64 φ, Δ = 1/8): G on the rtol 1e-3 grid vs the rtol 1e-4 grid, ≤ 6e-7 at the self voxel, vertical neighbour, ρ = 0.5 and 1 in the slab and ρ = 0.5 in the layer below.
   - Grid, Box and Operator validation suites pass.
+- **Loss benchmark (2026-10-13, in progress).** `Bench_GreenOperator.jl` now runs every stack (iso, uni, biax εzz = +2, hyp εzz = −3.2) at δ = Im ε ∈ {1e-1, 1e-3, 1e-6} on every component of every layer, S/M/L. It skips (and records) a case whose grid stalls or needs > 40k kρ, and carries the skip to larger sizes, as for a stalled tail. `BENCH_RESUME=1` resumes from `logs/bench_green_operator_loss.csv`. S and M are done; L is still to run.
+  - Iso/uni: low loss costs little (5.2k → 6.4k kρ from 1e-1 to 1e-6).
+  - Biax εzz = +2: 5.2k / 12.9k / 56.6k kρ at 1e-1 / 1e-3 / 1e-6 (over budget). Its node count also grows with low loss: the φ-dependent guided-mode poles of any biaxial layer, not only hyperbolic ones.
+  - Hyp: 5.6k at 1e-1; 89k (over budget) at 1e-3; at 1e-6 the finite bands converge but the tail stalls (32.8k kρ, fixed-band fallback, 2.4 h at S).
+  - Biaxial hyperbolic N_phi scan (Δ = 1/8, `ρ_far` = 1): uniaxial hyperbolic is flat in N_phi (8.3k at 1e-2, 17.5–18.7k at 1e-3 for 8–128 φ); biaxial hyperbolic grows with it at 1e-3 (35k / 51k / 76k at 8 / 32 / 128 φ). Candidate fix: a φ-dependent kρ grid (the 2D cache is a product grid today).
+  - The first M rows (iso/uni/biax/hyp at 1e-1, iso at 1e-3) ran in the process that had just done the 2.4 h hyp case and look inflated (iso M 204–230 s vs 47 s in a fresh process): rerun before quoting them.
 - **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3). The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
 
 ## Changes since 2026-09-24
