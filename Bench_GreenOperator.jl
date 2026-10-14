@@ -22,7 +22,7 @@ using LinearAlgebra, Printf, Statistics, Dates, Random
 # Loss: the same δ = Im ε on every component of every layer (claddings included),
 # δ ∈ BENCH_LOSSES (default 1e-1, 1e-3, 1e-6); the real parts are fixed per stack.
 # A case is skipped, and recorded as such, when box_kρ_grid stalls (it raises) or
-# needs more than BENCH_KMAX kρ (default 40k; low-loss biaxial hyperbolic, STATUS);
+# needs more than BENCH_KMAX kρ per φ on average (default 40k);
 # a (stack, δ) skipped at one size is skipped at the larger ones too, and so is one
 # whose adaptive tail stalled (its row is kept, marked `!`: fixed-band fallback,
 # not converged). BENCH_RESUME=1 skips the cases already in the CSV and reloads
@@ -59,14 +59,19 @@ sizes = Dict(
 )
 
 # quadrature / accuracy knobs (as in the Gila comparison, STATUS)
-BOX_RTOL  = 1e-3
+BOX_RTOL  = 1e-3        # shared kρ grid (azimuthally symmetric stacks: one φ group)
+BOX_RTOL_GROUPED = 1e-4 # φ-dependent kρ grid (box_kρ_grid_grouped): the shared grid over-resolves
+                        # (union of every probe's panels), the per-group one does not -- 1e-4 per group
+                        # gives ≈ 2e-6 (biax, δ = 1e-3), with half the shared rtol-1e-3 grid's nodes
+CPG = parse(Int, get(ENV, "BENCH_CPG", "4"))   # mirror classes per φ group: 4 is ≈ free in nodes for biax
+                        # (+4%) and 4× faster to build than 1; hyp pays 1.75× nodes for a 30% faster grid
 BOX_KCAP  = 3000.0
 BOX_NPHI  = 256
 BOX_MAXEV = 200_000     # the hyperbolic source layer's tails need > 50k at 256 φ (else a fixed-band fallback)
 NUFFT_EPS = 1e-12
 PHI_CHUNK = 64          # cache + operator built per φ chunk and summed (exact: G is linear in the
                         # quadrature sum); a 256-φ biaxial cache does not fit in 16 GB with the build
-NODE_BUDGET = 900_000   # kρ × φ per chunk (≈ 14k × 64, the largest that fit): fewer φ per chunk past 14k kρ
+NODE_BUDGET = 900_000   # kρ × φ per cache (≈ 14k × 64, the largest that fit): larger φ groups are split
 KMAX = parse(Int, get(ENV, "BENCH_KMAX", "40000"))
 losses = parse.(Float64, split(get(ENV, "BENCH_LOSSES", "1e-1,1e-3,1e-6"), ","))
 size_order = filter(s -> haskey(sizes, s), split(get(ENV, "BENCH_SIZES", "S,M,L"), ","))
@@ -76,38 +81,10 @@ end
 nrep = 5
 Random.seed!(1)
 
-"""
-Cache + `build_layer_operator` per chunk of `PHI_CHUNK` φ nodes, summed block by block.
-Returns `(op, t_cache, t_build)`; `op.timings` holds the per-block build time summed over chunks.
-"""
-function build_phi_chunked(st, src, kρ, wρ, φ, wφ, g, zsrc, zobs; kw...)
-    op = nothing; t_cache = 0.0; t_build = 0.0
-    chunk = clamp(NODE_BUDGET ÷ length(kρ), 1, PHI_CHUNK)
-    for r in Iterators.partition(eachindex(φ), chunk)
-        t_cache += @elapsed c = build_cavity_transfer_2d(st, ω, src, kρ, wρ, φ[r], wφ[r]; obs_layers=1:length(st))
-        t_build += @elapsed opc = build_layer_operator(c, g, zsrc, zobs; kw...)
-        c = nothing
-        if op === nothing
-            op = opc
-        else
-            for (b, bc) in zip(op.blocks, opc.blocks)
-                b.kind == bc.kind || error("φ chunks chose different block kinds ($(b.kind) vs $(bc.kind))")
-                for f in (:Tz, :Hz, :D)
-                    x = getfield(b, f)
-                    x === nothing || (x .+= getfield(bc, f))
-                end
-                op.timings[b.obs_layer] += opc.timings[b.obs_layer]
-            end
-        end
-        opc = nothing; GC.gc()
-    end
-    return op, t_cache, t_build
-end
-
 planes(d, Δ) = collect(((1:round(Int, d / Δ)) .- 0.5) .* Δ)
 mb(op) = sum(sum(x === nothing ? 0 : sizeof(x) for x in (b.Tz, b.Hz, b.D)) for b in op.blocks) / 2^20
 
-csv = joinpath(@__DIR__, "logs", "bench_green_operator_loss.csv")
+csv = joinpath(@__DIR__, "logs", get(ENV, "BENCH_CSV", "bench_green_operator_loss.csv"))
 mkpath(dirname(csv))
 isfile(csv) || open(io -> println(io, "date,threads,stack,loss,size,Nx,Ny,Ns,nkρ,nφ,tails_stalled,t_grid,t_cache,t_build,t_precompute,MB,t_apply_1,t_apply_Ns,t_apply_all,blocks,skipped"), csv, "w")
 
@@ -126,6 +103,7 @@ end
 @printf("threads: %d   FFTW threads set per call to nthreads()\n\n", Threads.nthreads())
 @printf("kρ: box_kρ_grid rtol=%g kρ_cap=%g maxevals=%d, N_phi=%d (chunks of ≤ %d φ, ≤ %d nodes), nufft_eps=%g, kρ budget %d\n\n",
         BOX_RTOL, BOX_KCAP, BOX_MAXEV, BOX_NPHI, PHI_CHUNK, NODE_BUDGET, NUFFT_EPS, KMAX)
+@printf("φ-dependent kρ grid (box_kρ_grid_grouped, rtol %g, %d mirror classes per group) for stacks that are not azimuthally symmetric;\nkρ column = mean kρ per φ\n\n", BOX_RTOL_GROUPED, CPG)
 @printf("%-24s %-6s %-4s %8s %4s %11s | %7s %7s %8s %9s %8s | %8s %8s %8s\n",
         "stack", "δ", "size", "Nx×Ny", "Ns", "kρ × φ", "grid s", "cache s", "build s", "precomp s", "MB", "1 src ms", "Ns src", "all ms")
 println("-"^140)
@@ -175,26 +153,30 @@ for sz in size_order, δ in losses, (name, mk) in stacks
     end
 
     GC.gc()
-    local kρ, wρ, φ, wφ, ginfo
+    local groups, ginfo
+    rtol = ModeSolver._is_azimuthally_symmetric_stack(st) ? BOX_RTOL : BOX_RTOL_GROUPED
     t_grid = @elapsed try
-        kρ, wρ, φ, wφ, ginfo = box_kρ_grid(st, ω, src; box=(p.Δ, p.Δ, p.Δ), N_phi=BOX_NPHI,
-                                           rtol=BOX_RTOL, kρ_cap=BOX_KCAP, ρ_far=p.L, maxevals=BOX_MAXEV)
+        groups, ginfo = box_kρ_grid_grouped(st, ω, src; box=(p.Δ, p.Δ, p.Δ), N_phi=BOX_NPHI,
+                                            rtol=rtol, kρ_cap=BOX_KCAP, ρ_far=p.L, maxevals=BOX_MAXEV,
+                                            classes_per_group=CPG)
     catch e
         e isa ErrorException && occursin("did not reach rtol", e.msg) || rethrow()
-        kρ = nothing
+        groups = nothing
     end
-    if kρ === nothing
+    if groups === nothing
         skipped[(name, δ)] = "grid stalled"
         record_skip(name, δ, sz, g, Ns, "grid stalled", t_grid)
         continue
-    elseif length(kρ) > KMAX
+    end
+    nφ = BOX_NPHI
+    nkρ = round(Int, ginfo.n_nodes / nφ)                         # mean kρ per φ
+    if nkρ > KMAX
         skipped[(name, δ)] = "kρ budget"
-        record_skip(name, δ, sz, g, Ns, "kρ budget ($(length(kρ)) > $KMAX)", t_grid, length(kρ))
+        record_skip(name, δ, sz, g, Ns, "kρ budget ($nkρ > $KMAX)", t_grid, nkρ)
         continue
     end
-    op, t_cache, t_build = build_phi_chunked(st, src, kρ, wρ, φ, wφ, g, zsrc, zobs; kw...)
-    nkρ, nφ = length(kρ), length(φ)
-    nstall = count(q -> q.stalled, ginfo.per_probe_tail)          # > 0: adaptive tail fell back to a fixed band
+    op, t_cache, t_build = build_layer_operator_grouped(st, ω, src, groups, g, zsrc, zobs; node_budget=NODE_BUDGET, kw...)
+    nstall = count(i -> i.any_tail_stalled, ginfo.per_group)     # > 0: an adaptive tail fell back to a fixed band
 
     P1 = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3); P1[g.Nx ÷ 2, g.Ny ÷ 2, (Ns + 1) ÷ 2, :] .= 1   # one source
     PN = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3)                                               # one per plane

@@ -221,7 +221,7 @@ function build_cavity_transfer_1d(stack::Vector{<:AbstractLayer}, ω::Real, sour
     basis  = Dict{Int,NamedTuple}(o => _obs_basis(Nk) for o in obs)
     ϵ_src  = SMatrix{3,3,ComplexF64}(stack[source_layer].ϵ[i, j] for i in 1:3, j in 1:3)
 
-    @threads :static for k in 1:Nk
+    @threads for k in 1:Nk
         kx = kxs[k]
         try
             modes = Modes_Stack(stack, ωf, kx)
@@ -359,7 +359,7 @@ function build_cavity_transfer_2d(stack::Vector{<:AbstractLayer}, ω::Real, sour
     end
 
     if use_rot
-        @threads :static for k in 1:Nk
+        @threads for k in 1:Nk
             try
                 modes0 = Modes_Stack(stack, ωf, kρs[k], 0.0)
                 Sint, Sprop = S_all_ingredients(stack, modes0)
@@ -377,7 +377,7 @@ function build_cavity_transfer_2d(stack::Vector{<:AbstractLayer}, ω::Real, sour
             end
         end
     else
-        @threads :static for idx in 1:(Nk * Np)
+        @threads for idx in 1:(Nk * Np)
             k = (idx - 1) ÷ Np + 1
             p = (idx - 1) % Np + 1
             try

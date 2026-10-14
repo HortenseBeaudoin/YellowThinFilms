@@ -40,10 +40,10 @@ are the source layer's local depths as `closed_form_G` takes them (`Dipole.z`).
 """
 module GreenOperator
 
-export LayerGreenOperator, build_layer_operator, apply_operator, dipole_moments, operator_summary
+export LayerGreenOperator, build_layer_operator, build_layer_operator_grouped, apply_operator, dipole_moments, operator_summary
 
-import ..ModeSolver: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial
-import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D
+import ..ModeSolver: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial, AbstractLayer
+import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G
 import ..ClosedFormAssembly: padded_offsets, _plan, _padded_size
 import ..SourceHandling: Dipole
@@ -251,6 +251,50 @@ function build_layer_operator(cache::AbstractCavityTransferCache, grid::NamedTup
         timings[o] = t
     end
     return LayerGreenOperator(s, grid, zs, flip, blocks, kw, timings)
+end
+
+"""
+    build_layer_operator_grouped(stack, ω, source_layer, groups, grid, z_src, z_obs_by_layer;
+                                 node_budget=900_000, kwargs...) -> (op, t_cache, t_build)
+
+The operator on a φ-dependent kρ grid (`ClosedFormGrid.box_kρ_grid_grouped`):
+one `CavityTransferCache2D` + `build_layer_operator` per group (`(kρ, wρ, φ, wφ)`),
+summed block by block -- exact, since every block is linear in the quadrature
+sum. A group with more than `node_budget` kρ × φ nodes is split into φ chunks
+(the cache of a 256-φ biaxial group does not fit in 16 GB with the build).
+`kwargs` go to `build_layer_operator`; every group must choose the same block
+kinds (true for the media rule, the structure check is skipped after the first
+group). `op.timings` holds the per-block build time summed over groups.
+"""
+function build_layer_operator_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int, groups::AbstractVector,
+                                      grid::NamedTuple, z_src::AbstractVector{<:Real},
+                                      z_obs_by_layer::AbstractDict{Int,<:AbstractVector{<:Real}};
+                                      node_budget::Int=900_000, kwargs...)
+    obs = sort(collect(keys(z_obs_by_layer)))
+    op = nothing; t_cache = 0.0; t_build = 0.0
+    for g in groups
+        chunk = clamp(node_budget ÷ max(length(g.kρ), 1), 1, length(g.φ))
+        for r in Iterators.partition(eachindex(g.φ), chunk)
+            t_cache += @elapsed c = build_cavity_transfer_2d(stack, ω, source_layer, g.kρ, g.wρ, g.φ[r], g.wφ[r]; obs_layers=obs)
+            t_build += @elapsed opc = build_layer_operator(c, grid, z_src, z_obs_by_layer; kwargs...,
+                                                           check=(op === nothing && get(kwargs, :check, true)))
+            c = nothing
+            if op === nothing
+                op = opc
+            else
+                for (b, bc) in zip(op.blocks, opc.blocks)
+                    b.kind == bc.kind || error("build_layer_operator_grouped: groups chose different block kinds ($(b.kind) vs $(bc.kind))")
+                    for f in (:Tz, :Hz, :D)
+                        x = getfield(b, f)
+                        x === nothing || (x .+= getfield(bc, f))
+                    end
+                    op.timings[b.obs_layer] += opc.timings[b.obs_layer]
+                end
+            end
+            opc = nothing; GC.gc()
+        end
+    end
+    return op, t_cache, t_build
 end
 
 _zlen(Ns, No) = nextprod([2, 3, 5], Ns + No - 1)

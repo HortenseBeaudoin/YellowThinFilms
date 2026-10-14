@@ -17,6 +17,11 @@ using LinearAlgebra, StaticArrays, Printf, Random
 #      structure=:dense; source layers 1 and 2. Point sources use observation
 #      planes half a step off the source planes (a point source's own plane is
 #      singular); boxes use the same planes (interior slab included).
+#  [g] φ-dependent kρ grid (box_kρ_grid_grouped + build_layer_operator_grouped):
+#      phi_groups partitions the φ grid (one group for an azimuthally symmetric
+#      stack, mirror classes for a biaxial one); a shared kρ grid split into
+#      groups reproduces the product operator exactly; the grouped adaptive grid
+#      matches a tight shared-grid reference (biaxial box, source layer 2).
 #  [m] build / apply time and memory, structured vs dense, on a larger case.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -105,6 +110,34 @@ for (lbl, st, src, mk, kw, box, structure, expect) in (
     @printf("   %-40s same-layer block %-15s vs per-depth route %.2e\n", lbl, kinds[src], e)
 end
 passed["o"] = worst_o < 1e-10
+
+# ── [g] φ-dependent kρ grid ──
+println("[g] grouped (φ-dependent) kρ grid, biaxial box 2D, layer 2")
+let st = stack_bi, src = 2, Nφ = 32, kw = (box_lateral=(s, s), Δz_box=s, lateral=:nufft, nufft_eps=1e-12)
+    zsrc = planes(st[src].d); zobs = Dict(o => planes(min(st[o].d, 0.5)) for o in 1:length(st))
+    part(gs) = sort(vcat(gs...)) == collect(1:Nφ)
+    gi, gb, gb4 = phi_groups(stack_iso, Nφ), phi_groups(st, Nφ), phi_groups(st, Nφ; classes_per_group=4)
+    ok_part = length(gi) == 1 && part(gi) && part(gb) && part(gb4) && length(gb) == Nφ ÷ 4 + 1
+    @printf("   phi_groups: iso %d group, biaxial %d mirror classes (%d with 4 per group), partitions: %s\n",
+            length(gi), length(gb), length(gb4), ok_part)
+    P = randn(ComplexF64, grid.Nx, grid.Ny, length(zsrc), 3)
+    err(A, B) = maximum(relerr(A[o], B[o]) for o in keys(B))
+    # exact: a shared grid split into groups
+    kρ, wρ = kρ_grid(st; kmax=25.0); φs, wφ = uniform_φ(Nφ)
+    Eprod = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; kw...), P)
+    Esplit = apply_operator(build_layer_operator_grouped(st, ω, src, [(kρ=kρ, wρ=wρ, φ=φs[i], wφ=wφ[i]) for i in gb4],
+                                                         grid, zsrc, zobs; kw...)[1], P)
+    e_split = err(Esplit, Eprod)
+    # adaptive: grouped grid vs a tight shared grid
+    gkw = (box=(s, s, s), kρ_cap=400.0, ρ_far=0.5, maxevals=100_000)
+    kρ, wρ, φs, wφ, _ = box_kρ_grid(st, ω, src; gkw..., N_phi=Nφ, rtol=1e-6)
+    Eref = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; kw...), P)
+    grp, info = box_kρ_grid_grouped(st, ω, src; gkw..., N_phi=Nφ, rtol=1e-4, classes_per_group=2)
+    e_grp = err(apply_operator(build_layer_operator_grouped(st, ω, src, grp, grid, zsrc, zobs; kw...)[1], P), Eref)
+    @printf("   shared grid split into groups vs product: %.1e | grouped rtol 1e-4 (%d groups, %d nodes) vs shared rtol 1e-6 (%d nodes): %.1e\n",
+            e_split, info.n_groups, info.n_nodes, length(kρ) * Nφ, e_grp)
+    passed["g"] = ok_part && e_split < 1e-12 && e_grp < 1e-4
+end
 
 # ── [m] cost: structured vs dense ──
 println("[m] build / apply / memory, structured vs dense (iso box 2D, source layer 2 of vac 1.0 / glass 1.0 / vac 1.0, Δz = 1/32)")

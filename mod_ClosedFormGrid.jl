@@ -56,9 +56,9 @@ from the lossless limit (`diagnostics/loss_sweep.jl`).
 """
 module ClosedFormGrid
 
-export point_kx_grid, box_kρ_grid, box_tail_cutoff, is_lossless
+export point_kx_grid, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
 
-import ..ModeSolver: AbstractLayer
+import ..ModeSolver: AbstractLayer, _is_azimuthally_symmetric_stack
 import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer
 import ..CavityTransfer: build_cavity_transfer_1d, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G, closed_form_pixel
@@ -89,14 +89,20 @@ is_lossless(stack::Vector{<:AbstractLayer}) =
 _lossless(m) = all(iszero(imag(m[i, j])) for i in 1:3, j in 1:3)
 
 """
-    box_kρ_grid(stack, ω, source_layer; box, zbar=nothing, N_phi=64, ρ_far=0.0,
+    box_kρ_grid(stack, ω, source_layer; box, zbar=nothing, N_phi=64, phi=nothing, lateral_dir=0.0, ρ_far=0.0,
                 rtol=1e-4, atol=0.0, kr_order=7, maxevals=10_000, kρ_cap=2000.0,
                 include_interior=true, on_stall=:error)
         -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
 
 `box = (Δx_box, Δy_box, Δz_box)`. `zbar` (local depths of the box centre in
 `source_layer`; default: the layer centre, plus both near-face positions when
-they fit) are the representative source depths probed. `include_interior=false`
+they fit) are the representative source depths probed. `phi = (φ_nodes, φ_weights)`
+replaces the uniform `N_phi` grid (one group of `box_kρ_grid_grouped`).
+`lateral_dir` (angle θ) places the lateral-neighbour and far-lateral probes along
+`(cos θ, sin θ)` instead of x̂: a φ node's lateral oscillation `e^{i kρ ρ cos(φ − θ)}` is
+fastest at `φ = θ`, so a φ group needs its probes along its own φ (on the full
+φ grid the φ = 0 nodes see the x̂ probes at full rate).
+`include_interior=false`
 drops the inside-the-slab probes (then every probe decays exponentially and the
 point-grid `kx_ratio_max = 80` tail cap is used). `info` merges
 `adaptive_kx_grid`'s info with the probe list, `Leff`, the tail bound and the
@@ -110,7 +116,7 @@ under-resolved probe): `:error` (default) throws, listing the stalled probes;
 `adaptive_kx_grid`'s fixed evanescent band, reported in `info.any_tail_stalled`.
 """
 function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
-                     box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, ρ_far::Real=0.0,
+                     box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, phi=nothing, lateral_dir::Real=0.0, ρ_far::Real=0.0,
                      rtol::Real=1e-4, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
                      kρ_cap::Real=2000.0, include_interior::Bool=true, on_stall::Symbol=:error)
     on_stall in (:error, :warn) || error("box_kρ_grid: on_stall=$on_stall must be :error or :warn")
@@ -123,13 +129,14 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
     is_lossless(stack) && @warn "box_kρ_grid: the stack is lossless (no Im ε or Im μ in any layer). The kρ quadrature " *
         "runs on the real axis, so guided-mode poles sit on the path and the finite bands will likely stall. " *
         "Add a small loss (Im ε ≈ 1e-6 on every layer converges for iso/uniaxial stacks)."
-    φs, wφ = build_kphi_grid(N_phi)
+    φs, wφ = phi === nothing ? build_kphi_grid(N_phi) : (collect(Float64, phi[1]), collect(Float64, phi[2]))
 
     # representative box-centre depths (local, caller's frame), inside the layer
     zb = zbar === nothing ? unique([d / 2, Δz / 2 + 1e-3 * d, d - Δz / 2 - 1e-3 * d]) : collect(Float64, zbar)
     zb = [z for z in zb if Δz / 2 - 1e-12 <= z <= d - Δz / 2 + 1e-12]
     isempty(zb) && error("box_kρ_grid: no box-centre depth fits in the layer")
     zpos_of(z) = source_layer == 1 ? d - z : z
+    cθ, sθ = cos(lateral_dir), sin(lateral_dir)
 
     # probes: (obs_layer, z_obs, Δx, Δy, h, tag); h = distance from the box's near face (Inf-free)
     probes = Tuple{Int,Float64,Float64,Float64,Float64,Tuple{Float64,String}}[]
@@ -137,7 +144,7 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
         zp = zpos_of(z̄)
         if include_interior
             push!(probes, (source_layer, zp, 0.0, 0.0, 0.0, (z̄, "self voxel")))
-            push!(probes, (source_layer, zp, Δx, 0.0, 0.0, (z̄, "lateral neighbour")))
+            push!(probes, (source_layer, zp, Δx * cθ, Δy * sθ, 0.0, (z̄, "lateral neighbour")))
         end
         zp + Δz <= d && push!(probes, (source_layer, zp + Δz, 0.0, 0.0, Δz / 2, (z̄, "vertical neighbour +")))
         zp - Δz >= 0 && push!(probes, (source_layer, zp - Δz, 0.0, 0.0, Δz / 2, (z̄, "vertical neighbour −")))
@@ -151,8 +158,8 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
             # just outside the slab, on a side that stays in the layer (a z_obs past the layer's
             # faces makes the integrand grow like e^{+kρ·overshoot})
             zf = zp + Δz / 2 + δ <= d ? zp + Δz / 2 + δ : zp - Δz / 2 - δ
-            zf >= 0 && push!(probes, (source_layer, zf, Float64(ρ_far), 0.0, δ, (z̄, "far lateral")))
-            include_interior && push!(probes, (source_layer, zp, Float64(ρ_far), 0.0, 0.0, (z̄, "far lateral, inside the slab")))
+            zf >= 0 && push!(probes, (source_layer, zf, ρ_far * cθ, ρ_far * sθ, δ, (z̄, "far lateral")))
+            include_interior && push!(probes, (source_layer, zp, ρ_far * cθ, ρ_far * sθ, 0.0, (z̄, "far lateral, inside the slab")))
         end
     end
     obs_layers = sort(unique(p[1] for p in probes))
@@ -200,6 +207,91 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
               "Pass on_stall=:warn to get the unconverged grid anyway.")
     end
     return kρ, wρ, φs, wφ, info
+end
+
+
+"""
+    phi_groups(stack, N_phi; classes_per_group=1) -> Vector{Vector{Int}}
+
+Partition of the uniform φ grid's indices `1:N_phi` into groups that can share a
+kρ grid. Azimuthally symmetric stack: one group (every φ has the same kρ
+content). Diagonal ε and μ in every layer: the mirror classes
+`{φ, −φ, π − φ, π + φ}` (the in-plane mirrors x → −x, y → −y map the stack onto
+itself, so these φ have the same poles). Otherwise (in-plane off-diagonal
+terms, e.g. gyrotropic): one φ per group. `classes_per_group` merges that many
+neighbouring classes (in φ order) into one group: fewer, larger groups amortize
+the per-solve overhead of the grid build, at the price of resolving a few
+neighbouring φ's poles together.
+"""
+function phi_groups(stack::Vector{<:AbstractLayer}, N_phi::Int; classes_per_group::Int=1)
+    _is_azimuthally_symmetric_stack(stack) && return [collect(1:N_phi)]
+    merge_classes(cl) = [sort(vcat(cl[r]...)) for r in Iterators.partition(eachindex(cl), classes_per_group)]
+    diag = all(l -> _offdiag_zero(l.ϵ) && (!hasproperty(l, :μ) || _offdiag_zero(l.μ)), stack)
+    diag || return merge_classes([[p] for p in 1:N_phi])
+    seen = falses(N_phi)
+    groups = Vector{Int}[]
+    for p in 0:N_phi-1                    # φ_p = 2πp/N_phi; orbit under p → −p and (N even) p → N/2 − p
+        seen[p + 1] && continue
+        orbit = Set([p, mod(-p, N_phi)])
+        if iseven(N_phi)
+            for q in collect(orbit)
+                push!(orbit, mod(N_phi ÷ 2 - q, N_phi))
+            end
+        end
+        g = sort([q + 1 for q in orbit])
+        seen[g] .= true
+        push!(groups, g)
+    end
+    return merge_classes(groups)              # classes come out in increasing min φ, i.e. φ order on [0, π/2]
+end
+_offdiag_zero(m) = all(iszero(m[i, j]) for i in 1:3, j in 1:3 if i != j)
+
+"""
+    box_kρ_grid_grouped(stack, ω, source_layer; N_phi=64, classes_per_group=1, kwargs...) -> (groups, info)
+
+φ-dependent kρ grid: the uniform φ grid is split into `phi_groups(stack, N_phi)`
+and `box_kρ_grid` is run on each group with its own φ nodes (`kwargs` as for
+`box_kρ_grid`). `groups[g] = (kρ, wρ, φ, wφ)`; together they partition the φ
+grid, so a quantity linear in the quadrature sum (the cache's `G`, an operator
+block) is the sum over groups of its value on each group's product grid
+(`GreenOperator.build_layer_operator_grouped`).
+
+Why: in a biaxial layer the guided-mode poles, and a hyperbolic layer's
+high-kρ Fabry–Pérot comb, sit at φ-dependent kρ. A shared kρ grid has to
+resolve every φ's poles once they are narrower than their shift between φ
+nodes, so its size grows with `N_phi` (35k / 51k / 76k kρ at 8 / 32 / 128 φ, biaxial
+hyperbolic at δ = 1e-3); one φ needs 18–24k. An azimuthally symmetric stack
+gets a single group, identical to `box_kρ_grid`.
+
+`info`: `n_groups`, `n_nodes` (Σ kρ × φ), `nkρ` per group, `any_tail_stalled`,
+`per_group` (each group's `box_kρ_grid` info).
+"""
+function box_kρ_grid_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int; N_phi::Int=64,
+                             classes_per_group::Int=1, kwargs...)
+    φs, wφ = build_kphi_grid(N_phi)
+    idxs = phi_groups(stack, N_phi; classes_per_group=classes_per_group)
+    groups = Vector{NamedTuple{(:kρ, :wρ, :φ, :wφ),NTuple{4,Vector{Float64}}}}(undef, length(idxs))
+    infos = Vector{Any}(undef, length(idxs))
+    # groups in parallel: a small group's evaluations are too cheap to thread well inside
+    try
+        @threads for n in eachindex(idxs)
+            idx = idxs[n]
+            # lateral probes along the group's own φ (its mirror images then oscillate no faster)
+            kρ, wρ, φg, wφg, info = box_kρ_grid(stack, ω, source_layer; kwargs..., phi=(φs[idx], wφ[idx]),
+                                                lateral_dir=(length(idx) == N_phi ? 0.0 : φs[idx[1]]))
+            groups[n] = (kρ=kρ, wρ=wρ, φ=φg, wφ=wφg)
+            infos[n] = info
+        end
+    catch e                                  # a group's own error (e.g. a stall), not the task wrapper
+        while e isa CompositeException || e isa TaskFailedException
+            e = e isa CompositeException ? e.exceptions[1] : e.task.exception
+        end
+        throw(e)
+    end
+    info = (n_groups=length(groups), n_nodes=sum(length(g.kρ) * length(g.φ) for g in groups),
+            nkρ=[length(g.kρ) for g in groups], any_tail_stalled=any(i -> i.any_tail_stalled, infos),
+            per_group=infos)
+    return groups, info
 end
 
 
