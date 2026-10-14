@@ -102,6 +102,12 @@ The project now lives in a clone of the GitHub repository (this folder). The val
   - S, 1 class per group (sequential groups): biax 1e-3 6.1k kρ, 302 s precompute (shared: 12.9k, 132 s: the grid dominates at S); hyp 1e-3 21.8k kρ, 1,092 s (was skipped at 89k); biax 1e-6 6.9k kρ, 349 s (was skipped at 56.6k). One mirror group of hyp at 1e-6 converges with 55.7k kρ in 43 s (the shared grid's tail stalled after 1 h), still over the 40k benchmark budget.
   - `CavityTransfer`'s cache loops use the default (dynamic) `@threads` instead of `:static` (no thread-local buffers), so groups can run in parallel.
   - New `[g]` test in `Gz_ClosedForm_Operator_Validation.jl`; all seven validation suites pass.
+- **Loss benchmark, φ-dependent grid (2026-10-14, `logs/bench_green_operator_loss.csv` + `logs/bench_hyp_1e-3.csv`).** Same δ on every component of every layer, 256 φ, kρ_cap 3000, nufft_eps 1e-12; shared grid at rtol 1e-3 for iso/uni, grouped grid at rtol 1e-4 (4 classes per group) for biax/hyp; kρ = mean per φ. S = 16²×4, M = 32²×8, L = 64²×16 voxels.
+  - Precompute at L (s): iso 146 / 156 / 172, uni 183 / 197 / 221, biax 315 / 351 / 481, hyp 322 / 2,089 / – at δ = 1e-1 / 1e-3 / 1e-6. kρ at L: iso 5.9–7.0k, uni 6.0–7.3k, biax 6.6 / 7.6 / 10.6k, hyp 6.7 / 46.4k. Memory at L 1.3 (iso) – 1.8 GB.
+  - Apply (1 source / one per plane / every voxel): ≈ 0.7–1.3 ms at S, 5–9 ms at M, 75–108 ms at L, for every stack and loss.
+  - Build is 70–90% of the precompute at L; the grouped grid's own cost is 70–120 s at L for biax (vs 15–20 s for the shared iso/uni grid), 573 s for hyp at 1e-3.
+  - Hyp at δ = 1e-3 needs 38k / 41k / 46k kρ at S / M / L (run with `BENCH_KMAX=60000`; over the default 40k from M).
+  - Not converged: hyp at δ = 1e-6. With 4 classes per group 16/17 tails stall (fixed-band fallback, 1,633 s grid at S); one class per group converges (55.7k kρ, see above) but was not benchmarked.
 - **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3). The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
 
 ## Changes since 2026-09-24
