@@ -1,6 +1,6 @@
 # Status: closed-form rewrite (`PLAN_closed_form_point_source_rewrite.md`)
 
-Last updated 2026-10-16 (step 3 pre-study and plan: see "Step 3 pre-study and plan"). Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
+Last updated 2026-10-16 (step 3, z skeletons, implemented and validated on branch `z-skeletons`: see "Branch `z-skeletons`"; benchmark pending). Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
 
 ## Repository state (2026-10-12)
 
@@ -61,7 +61,7 @@ The project now lives in a clone of the GitHub repository (this folder). The val
     - cross layer: dense per pair.
   - `:auto` decides from the media, then checks the 4-point identity on a few pixels and falls back to dense with a warning.
   - Apply: 2D FFT of every source plane; z-FFT, pointwise 3×3 and z-iFFT for the Toeplitz/Hankel blocks; plane-pair products for dense blocks; one 2D iFFT per observation plane. All accumulation is in k-space.
-- **`Gz_ClosedForm_Operator_Validation.jl`** (~45 s): term split [t]; operator = `closed_form_field` for random moments, all layers, point/box, source layers 1/2, structured / toeplitz_dense / dense [o]: ≤ 1.3e-15; cost [m].
+- **`Gz_ClosedForm_Operator_Validation.jl`** (~45 s): term split [t]; operator = `closed_form_field` for random moments, all layers, point/box, source layers 1/2, structured / toeplitz_dense / dense [o]: ≤ 1.3e-15; cost [m]. *(Since then: grouped grid [g] and z skeletons [s], see "Branch `z-skeletons`".)*
 - **Cost.** Gila-like stack (vac 1.5 / glass 0.5 / vac 2.0), box 1/32 in layer 1, 48×48 px (padded 96×96), 300k nodes:
   - layer 1 → 1 (48×48 planes): structured, 243 MB, 5.6 s (per-depth route ≈ 2.9 GB, ≈ 75 s);
   - layer 1 → 2 (48×16): dense, 972 MB, 21 s;
@@ -180,6 +180,61 @@ At 16 planes the dense pair-loop apply (`9·Ns·No` per `k_m`) costs about as mu
    - the choice of τ, and whether `P` (an ID) amplifies errors more than an orthogonal `U`: check ‖P‖;
    - sampling the ~10⁶ family columns without missing the evanescent extremes;
    - layer 1's flipped plane order (`flip`).
+
+   All three are settled in "Branch `z-skeletons`" below.
+
+## Branch `z-skeletons` (2026-10-16, from `main`): step 3
+
+Steps 1–5 of the plan are in `mod_GreenOperator.jl`; the benchmark (step 6) is pending.
+
+- **Skeletons (`_zskeleton`, `z_skeletons`).** Per side of a block, the family of the layer's own exponentials on every quadrature node and mode:
+  - observation side (local `z'`): `e^{iKZf·z'}`, `e^{iKZb(z'−d)}`;
+  - source side (cavity-frame `zpos`): `e^{iQf(d−zpos)}`, `e^{−iQb·zpos}`;
+  - semi-infinite layers carry one branch only, checked on a cache: `T^o` rows/columns exactly 0 for the upward wave in obs layer 1, the downward one in the last layer, and the `Ψb` input of a source in layer 1.
+  
+  Built as: streaming QR (TSQR, threaded) of all ~10⁶ columns down to an `N × N` factor (exact, no sampling of the evanescent extremes), column-pivoted QR of it, then the smallest rank whose interpolation error, **checked on every node term**, is ≤ τ (bisection). Entries are ≤ 1 in modulus, so τ is an absolute bound per node term. ≈ 2 s for 750k columns at 64 planes; BLAS is pinned to 1 thread inside (nested BLAS threads were ≈ 10× slower).
+- **‖P‖ ≈ 1.8 at 16 planes, 3.2 at 64** (biaxial layer, τ = 1e-6): the interpolation does not amplify errors.
+- **`flip`:** the source skeleton is built on the internal plane order (`zs_int`, increasing `zpos`), so layer 1 needs nothing special.
+- **Blocks.** `:skeleton` (cross layer) and `:toeplitz_skeleton` (biaxial same layer: Toeplitz direct + skeleton scattered). `D` is evaluated with the existing `_dense_planes` on the skeleton pairs only. A side whose skeleton has ≥ 80% of its planes is kept whole (`Ps`/`Po = nothing`); both whole → the plain `:dense` / `:toeplitz_dense` block. Iso/uniaxial same-layer blocks are unchanged (Toeplitz + Hankel). `structure=:dense` disables the skeletons (the reference).
+- **Apply.** Fold the source planes (`Ĵ·Ps`, one GEMM per component, shared by every block from the same source skeleton), pair loop on `R_s × R_o`, interpolate (`·Poᵀ`, one GEMM), then the usual 2D iFFT.
+- **Grouped build.** The blocks are summed over φ groups, so all groups must share the skeletons: `z_skeletons_grouped` builds them before the first cache, from each layer's own `_modes_layer` solve at every `(kρ, φ)` node of every group (φ = 0 only on an azimuthally symmetric stack). This is not a stack solve.
+- **API.** `build_layer_operator(...; skeleton=true, skeleton_tol=1e-6, skeletons=nothing)`, the same keywords on `build_layer_operator_grouped`. Default τ = 1e-6, 100× below the grouped grid's rtol 1e-4; the field error measured is ≈ 0.1–0.7 τ.
+
+### Skeleton sizes with the per-node criterion (`diagnostics/zskeleton_rank.jl`)
+
+Rank at τ = 1e-4 / 1e-6 / 1e-9, without the 80% rule; families from 6k kρ ∈ [0, 3000] (× 32 φ for biaxial), both modes.
+
+| layer | 0.5λ, N = 8 | 16 | 32 | 64 | 128 | 2λ, N = 64 | 2λ, 128 |
+|---|---|---|---|---|---|---|---|
+| vacuum cladding (outgoing only) | 8/8/8 | 9/12/15 | 11/14/18 | 12/16/21 | 13/17/24 | 14/18/23 | 16/20/26 |
+| glass layer (obs = src) | 8/8/8 | 12/15/16 | 15/19/24 | 18/23/30 | 20/27/36 | 21/25/33 | 23/30/38 |
+| biaxial εzz = +2 (obs = src) | 8/8/8 | 12/15/16 | 16/19/24 | 18/24/30 | 21/27/37 | 24/27/34 | 26/32/40 |
+| hyperbolic εzz = −3.2, δ = 0.1 | full | full | full | full | full | full | full |
+
+- 1–4 planes more than `zfamily_rank.jl` (whose σ/σ₁ criterion depends on the sampling density), still logarithmic in N.
+- A 2λ layer costs only 2–3 planes more than a 0.5λ one at the same N: the propagating part (Nyquist count ∝ thickness·n/λ) is small next to the evanescent one.
+- The biaxial family is the glass one ±1 plane.
+- Expected size of a vacuum ↔ glass cross block at 1e-6, `(R_o·R_s)/(No·Ns)`:
+  - 16 planes: 0.75 (the glass side is kept whole);
+  - 32: 0.26;
+  - 64: 0.09 (11×);
+  - 128: 0.028 (36×).
+
+### Validation (`Gz_ClosedForm_Operator_Validation.jl`, all PASS)
+
+- [o], [g] and [m] now run with `skeleton=false`; they test exactness and are unchanged (≤ 1.3e-15, split 6e-16).
+- New [s]: skeleton vs dense blocks for random moments on every plane, Δ = 1/32, 0.75λ claddings (24 planes), 0.5λ middle layer, τ = 1e-6:
+
+| case | blocks (R_s × R_o) | skeleton vs dense |
+|---|---|---|
+| iso box 2D, source layer 2 | 1: 16×14, 2: structured, 3: 16×14 | 7.6e-8 |
+| iso box 2D, source layer 1 (flip) | 1: structured, 2: 14×16, 3: 14×14 | 7.7e-8 |
+| biaxial box 2D, layer 2 | 1: 16×13, 2: toeplitz_dense (both sides whole), 3: 16×13 | 4.4e-7 |
+| hyperbolic box 2D, layer 2 | source side whole on every block (fallback), 2: toeplitz_dense | 3.4e-7 |
+| iso point 1D, layer 2 | 1: 16×13, 3: 16×13 | 6.8e-7 |
+| grouped biaxial box, 3 groups, shared skeleton | as above | 4.4e-7 |
+
+The other suites do not use `mod_GreenOperator.jl`.
 
 ## Changes since 2026-09-24
 

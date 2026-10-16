@@ -22,6 +22,12 @@ using LinearAlgebra, StaticArrays, Printf, Random
 #      stack, mirror classes for a biaxial one); a shared kρ grid split into
 #      groups reproduces the product operator exactly; the grouped adaptive grid
 #      matches a tight shared-grid reference (biaxial box, source layer 2).
+#      [o] and [g] run with skeleton=false: they test exactness.
+#  [s] z skeletons (step 3): skeleton=true vs skeleton=false for random moments on
+#      every plane, every observation layer, to the tolerance τ: iso box (source
+#      layers 1 and 2), biaxial box (cross + :toeplitz_skeleton), iso point 1D;
+#      a hyperbolic source layer keeps its own side whole (fallback); the grouped
+#      build shares one skeleton across groups.
 #  [m] build / apply time and memory, structured vs dense, on a larger case.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -100,7 +106,7 @@ for (lbl, st, src, mk, kw, box, structure, expect) in (
     c = mk(st, src)
     zsrc = planes(st[src].d)
     zobs = Dict(o => planes(st[o].d; shift=(o == src && !box) ? 0.5 : 0.0)[1:end-(o == src && !box ? 1 : 0)] for o in 1:length(st))
-    op = build_layer_operator(c, grid, zsrc, zobs; structure=structure, kw...)
+    op = build_layer_operator(c, grid, zsrc, zobs; structure=structure, skeleton=false, kw...)
     kinds = Dict(b.obs_layer => b.kind for b in op.blocks)
     P = random_moments(op)
     E = apply_operator(op, P)
@@ -124,19 +130,67 @@ let st = stack_bi, src = 2, Nφ = 32, kw = (box_lateral=(s, s), Δz_box=s, later
     err(A, B) = maximum(relerr(A[o], B[o]) for o in keys(B))
     # exact: a shared grid split into groups
     kρ, wρ = kρ_grid(st; kmax=25.0); φs, wφ = uniform_φ(Nφ)
-    Eprod = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; kw...), P)
+    Eprod = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; skeleton=false, kw...), P)
     Esplit = apply_operator(build_layer_operator_grouped(st, ω, src, [(kρ=kρ, wρ=wρ, φ=φs[i], wφ=wφ[i]) for i in gb4],
-                                                         grid, zsrc, zobs; kw...)[1], P)
+                                                         grid, zsrc, zobs; skeleton=false, kw...)[1], P)
     e_split = err(Esplit, Eprod)
     # adaptive: grouped grid vs a tight shared grid
     gkw = (box=(s, s, s), kρ_cap=400.0, ρ_far=0.5, maxevals=100_000)
     kρ, wρ, φs, wφ, _ = box_kρ_grid(st, ω, src; gkw..., N_phi=Nφ, rtol=1e-6)
-    Eref = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; kw...), P)
+    Eref = apply_operator(build_layer_operator(build_cavity_transfer_2d(st, ω, src, kρ, wρ, φs, wφ), grid, zsrc, zobs; skeleton=false, kw...), P)
     grp, info = box_kρ_grid_grouped(st, ω, src; gkw..., N_phi=Nφ, rtol=1e-4, classes_per_group=2)
-    e_grp = err(apply_operator(build_layer_operator_grouped(st, ω, src, grp, grid, zsrc, zobs; kw...)[1], P), Eref)
+    e_grp = err(apply_operator(build_layer_operator_grouped(st, ω, src, grp, grid, zsrc, zobs; skeleton=false, kw...)[1], P), Eref)
     @printf("   shared grid split into groups vs product: %.1e | grouped rtol 1e-4 (%d groups, %d nodes) vs shared rtol 1e-6 (%d nodes): %.1e\n",
             e_split, info.n_groups, info.n_nodes, length(kρ) * Nφ, e_grp)
     passed["g"] = ok_part && e_split < 1e-12 && e_grp < 1e-4
+end
+
+# ── [s] z skeletons ──
+println("[s] z skeletons vs dense blocks (τ = 1e-6)")
+let ss = 1 / 32, τ = 1e-6, gs = uniform_kxky_grid(L=0.25, Δx=1 / 32)
+    m_hyp = BiaxialMaterial(2.25 + 0.1im, 4.6 + 0.1im, -3.2 + 0.1im)
+    pl(d) = collect(((1:round(Int, d / ss)) .- 0.5) .* ss)
+    kwb = (box_lateral=(ss, ss), Δz_box=ss, lateral=:nufft, nufft_eps=1e-12)
+    st3(m) = [lay(m_vac, 0.75), lay(m, 0.5), lay(m_vac, 0.75)]
+    c2(st, src) = build_cavity_transfer_2d(st, ω, src, kρ_grid(st; kmax=300.0, width=2.0)..., uniform_φ(16)...)
+    worst = 0.0; ok_kinds = true
+    for (lbl, st, src, mk, kw, box, want) in (
+            ("iso box 2D, layer 2",      st3(m_gl),  2, c2,  kwb, true, Dict(1 => :skeleton, 2 => :structured, 3 => :skeleton)),
+            ("iso box 2D, layer 1",      st3(m_gl),  1, c2,  kwb, true, Dict(1 => :structured, 2 => :skeleton, 3 => :skeleton)),
+            ("biaxial box 2D, layer 2",  st3(m_bi),  2, c2,  kwb, true, Dict(1 => :skeleton, 3 => :skeleton)),
+            ("hyperbolic box 2D, layer 2", st3(m_hyp), 2, c2, kwb, true, Dict(1 => :skeleton, 2 => :toeplitz_dense, 3 => :skeleton)),
+            ("iso point 1D, layer 2",    st3(m_gl),  2, (st, src) -> build_cavity_transfer_1d(st, ω, src, point_kx_grid(st, ω, src; ρ_max=1.0, pz=ss)[1:2]...),
+                                         (;), false, Dict(1 => :skeleton, 3 => :skeleton)))
+        c = mk(st, src)
+        zs = pl(st[src].d)
+        zobs = Dict(o => pl(st[o].d)[box || o != src ? (1:end) : (1:end-1)] .+ (box || o != src ? 0.0 : ss / 2) for o in 1:3)
+        op = build_layer_operator(c, gs, zs, zobs; skeleton_tol=τ, kw...)
+        op0 = build_layer_operator(c, gs, zs, zobs; skeleton=false, kw...)
+        P = randn(ComplexF64, gs.Nx, gs.Ny, length(zs), 3)
+        E, E0 = apply_operator(op, P), apply_operator(op0, P)
+        kinds = Dict(b.obs_layer => b.kind for b in op.blocks)
+        e = maximum(relerr(E[o], E0[o]) for o in keys(zobs))
+        k_ok = all(kinds[o] == k for (o, k) in want)
+        # hyperbolic source layer: its own side cannot be compressed
+        lbl == "hyperbolic box 2D, layer 2" && (k_ok &= all(b.Ps === nothing for b in op.blocks))
+        worst = max(worst, e); ok_kinds &= k_ok
+        @printf("   %-27s %s | skeleton vs dense %.1e%s\n", lbl,
+                join([@sprintf("%d:%s %s", b.obs_layer, b.kind, b.kind in (:skeleton, :toeplitz_skeleton) ? "$(size(b.D, 5))×$(size(b.D, 6))" : "")
+                      for b in op.blocks], "  "), e, k_ok ? "" : "   (unexpected block kinds)")
+    end
+    # grouped: one skeleton for every group, applied as the dense grouped build to τ
+    st = st3(m_bi); src = 2; Nφ = 16
+    zs = pl(0.5); zobs = Dict(o => pl(st[o].d) for o in 1:3)
+    kρ, wρ = kρ_grid(st; kmax=300.0, width=2.0); φs, wφ = uniform_φ(Nφ)
+    groups = [(kρ=kρ, wρ=wρ, φ=φs[i], wφ=wφ[i]) for i in phi_groups(st, Nφ; classes_per_group=2)]
+    opg = build_layer_operator_grouped(st, ω, src, groups, gs, zs, zobs; skeleton_tol=τ, kwb...)[1]
+    opg0 = build_layer_operator_grouped(st, ω, src, groups, gs, zs, zobs; skeleton=false, kwb...)[1]
+    P = randn(ComplexF64, gs.Nx, gs.Ny, length(zs), 3)
+    Eg, Eg0 = apply_operator(opg, P), apply_operator(opg0, P)
+    eg = maximum(relerr(Eg[o], Eg0[o]) for o in keys(zobs))
+    @printf("   grouped biaxial box, %d groups: %s | skeleton vs dense %.1e\n", length(groups),
+            join(["$(b.obs_layer):$(b.kind)" for b in opg.blocks], "  "), eg)
+    passed["s"] = ok_kinds && worst < τ && eg < τ && any(b.kind === :skeleton for b in opg.blocks)
 end
 
 # ── [m] cost: structured vs dense ──
@@ -148,7 +202,7 @@ gm = uniform_kxky_grid(L=0.5, Δx=sm)
 zm = collect(((1:32) .- 0.5) .* sm)
 kwm = (box_lateral=(sm, sm), Δz_box=sm, lateral=:nufft)
 for structure in (:auto, :dense)
-    tb = @elapsed op = build_layer_operator(cm, gm, zm, Dict(2 => zm); structure=structure, kwm...)
+    tb = @elapsed op = build_layer_operator(cm, gm, zm, Dict(2 => zm); structure=structure, skeleton=false, kwm...)
     P = zeros(ComplexF64, gm.Nx, gm.Ny, 32, 3); P[5, 9, 3, :] .= 1; P[20, 11, 30, 3] = 1
     apply_operator(op, P)
     ta = @elapsed E = apply_operator(op, P)

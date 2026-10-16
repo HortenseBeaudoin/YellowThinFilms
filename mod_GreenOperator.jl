@@ -6,7 +6,7 @@ The user declares the source layer (its `CavityTransferCache`), the uniform
 grid of source planes in it, and the uniform grid of observation planes in
 each wanted observation layer. Everything grid-dependent is precomputed;
 `apply_operator` then does only FFTs, pointwise 3×3 products and (for dense
-blocks) plane-by-plane products, all in k-space.
+and skeleton blocks) plane-by-plane products, all in k-space.
 
 Lateral: as `mod_ClosedFormAssembly.jl` -- `G` sampled on the 2× zero-padded
 offset grid, FFT'd once, so the lateral sum over sources is an exact linear
@@ -24,9 +24,22 @@ Axial, one block per (source layer, observation layer):
     (length `Lz ≥ Ns+No−1`), so this block's apply is 3D FFTs + pointwise
     3×3 products.
   - same layer, other media (biaxial/gyrotropic): the direct term is still
-    Toeplitz (homogeneous layer); the scattered part is stored per
-    (source plane, observation plane) pair -- dense.
-  - cross layer: dense per pair (low-rank compression is the next step).
+    Toeplitz (homogeneous layer); the scattered part has no z structure.
+  - cross layer: no z structure either.
+
+  Blocks with no z structure are stored on SKELETON planes (`skeleton=true`).
+  In a homogeneous layer every node's z-dependence is a plane wave `e^{±iQz}`
+  set by the layer alone (the stack only sets the amplitudes), so the field on
+  all planes is interpolated from a few planes, `G(z'_j, ·) = Σ_p Po[j, p]·
+  G(z'_{o_p}, ·)`, with the same `Po` for every node (an interpolative
+  decomposition of the layer's exponential family, `_zskeleton`, checked on
+  every node to `skeleton_tol`); likewise on the source side,
+  `Σ_i G(·, z_i)·J_i = Σ_q G(·, z_{s_q})·(Psᵀ J)_q`. Only the skeleton pairs
+  are evaluated and stored; the apply folds the source planes (`Psᵀ`, one GEMM),
+  runs the pair loop on the skeleton planes and interpolates (`Po`, one GEMM).
+  A side that cannot be compressed (≥ 80% of its planes, e.g. a hyperbolic
+  layer, where high-kρ waves propagate) is kept whole; with both sides whole
+  the block is the plain dense one.
 
 `structure=:auto` picks the structured form from the media and then checks it
 numerically on a few pixels (`check=true`); it falls back to dense, with a
@@ -41,8 +54,9 @@ are the source layer's local depths as `closed_form_G` takes them (`Dipole.z`).
 module GreenOperator
 
 export LayerGreenOperator, build_layer_operator, build_layer_operator_grouped, apply_operator, dipole_moments, operator_summary
+export ZSkeleton, z_skeletons, z_skeletons_grouped
 
-import ..ModeSolver: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial, AbstractLayer
+import ..ModeSolver: _is_azimuthally_symmetric_stack, _modes_layer, IsotropicMaterial, UniaxialMaterial, AbstractLayer
 import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G
 import ..ClosedFormAssembly: padded_offsets, _plan, _padded_size
@@ -60,9 +74,13 @@ using Printf
 
 """
 One (source layer → observation layer) block. `kind`:
-`:structured` (`Tz`, `Hz` set), `:toeplitz_dense` (`Tz`, `D` set), `:dense` (`D` set).
+`:structured` (`Tz`, `Hz` set), `:toeplitz_dense` (`Tz`, `D` set), `:dense` (`D` set),
+`:skeleton` (`D` on skeleton planes, `Ps` and/or `Po` set), `:toeplitz_skeleton`
+(`Tz`, and the scattered part as `:skeleton`).
 `Tz`/`Hz` are `(Px, Py, Lz, 3, 3)`, already FFT'd along z (with `1/Lz` and, for
-`Hz`, the output shift folded in). `D` is `(Px, Py, 3, 3, Ns, No)`.
+`Hz`, the output shift folded in). `D` is `(Px, Py, 3, 3, Ns, No)`, or
+`(Px, Py, 3, 3, R_s, R_o)` on the skeleton planes, with `D_full[.., i, j] ≈
+Σ_{q,p} Ps[i, q]·Po[j, p]·D[.., q, p]`; `Ps`/`Po` = `nothing` on a side kept whole.
 """
 struct ZBlock
     obs_layer :: Int
@@ -72,7 +90,10 @@ struct ZBlock
     Tz        :: Union{Nothing,Array{ComplexF64,5}}
     Hz        :: Union{Nothing,Array{ComplexF64,5}}
     D         :: Union{Nothing,Array{ComplexF64,6}}
+    Ps        :: Union{Nothing,Matrix{ComplexF64}}
+    Po        :: Union{Nothing,Matrix{ComplexF64}}
 end
+ZBlock(o, zo, kind, Lz, Tz, Hz, D) = ZBlock(o, zo, kind, Lz, Tz, Hz, D, nothing, nothing)
 
 """
     LayerGreenOperator
@@ -167,6 +188,200 @@ function _check_structure(cache, zsrc_int, zobs, kw)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  z skeletons (cross-layer and biaxial-scattered blocks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+Interpolative decomposition of one layer's z-exponential family on its planes:
+`F ≈ P·F[idx, :]` for the column of EVERY quadrature node and mode, with
+`max |F − P·F[idx, :]| = err`. The entries of `F` are `e^{iQ·(distance into the
+layer)}`, all of modulus ≤ 1, so `err` bounds each node term absolutely. `idx`
+increasing, `P[idx, :] = I`, `pnorm = ‖P‖₂`. A side kept whole has `idx = 1:N`,
+`P = I` (`whole = true`).
+"""
+struct ZSkeleton
+    idx   :: Vector{Int}
+    P     :: Matrix{ComplexF64}
+    err   :: Float64
+    pnorm :: Float64
+    whole :: Bool
+end
+
+const _FAM_CHUNK = 8192
+
+"Rows `e^{iQ_k(σ·z_j + c)}`, `k ∈ r`, as a `length(r) × N` block (node × plane); underflow to exact 0."
+function _family_rows(Q::Vector{ComplexF64}, σ::Float64, c::Float64, z::Vector{Float64}, r)
+    A = Matrix{ComplexF64}(undef, length(r), length(z))
+    @inbounds for (j, zj) in enumerate(z), (m, k) in enumerate(r)
+        x = im * Q[k] * (σ * zj + c)
+        A[m, j] = real(x) < -700 ? zero(ComplexF64) : exp(x)
+    end
+    return A
+end
+
+"The `(term, node range)` chunks of the family `fam = [(Q, σ, c), ...]`."
+_family_chunks(fam) = [(t, r) for (t, (Q, _, _)) in enumerate(fam) for r in Iterators.partition(eachindex(Q), _FAM_CHUNK)]
+
+"""
+`op(acc, A)` folded over every `(chunk × N)` row block `A` of the family, one
+accumulator per task from `init()`, threaded over chunks; returns the accumulators.
+"""
+function _fold_chunks(op, init, fam, z)
+    chunks = _family_chunks(fam)
+    nt = min(Threads.nthreads(), max(length(chunks), 1))
+    parts = collect(Iterators.partition(eachindex(chunks), cld(max(length(chunks), 1), nt)))
+    accs = [init() for _ in parts]
+    @sync for (a, part) in enumerate(parts)
+        Threads.@spawn for i in part
+            t, r = chunks[i]
+            Q, σ, c = fam[t]
+            accs[a] = op(accs[a], _family_rows(Q, σ, c, z, r))
+        end
+    end
+    return accs
+end
+
+"Distinct finite non-zero values of node arrays (of numbers or 2-vectors); invalid nodes are 0."
+function _qlist(xs...)
+    v = ComplexF64[]
+    for x in xs, q in x, e in q
+        (iszero(e) || !isfinite(e)) || push!(v, e)
+    end
+    return unique!(v)
+end
+
+"""
+    _zskeleton(z, fam; tol, whole_frac=0.8) -> ZSkeleton
+
+`fam`: family terms `(Q, σ, c)`, one column `e^{iQ(σz + c)}` per entry of `Q`.
+Streaming QR of `Fᵀ` (nodes × planes) down to its `N × N` factor `R` (`Fᵀ = Q₀R`:
+a column ID of `R` is one of `Fᵀ`, same error), column-pivoted QR of `R`, then
+the smallest rank `k` whose interpolation error, checked on every node, is
+`≤ tol` (bisection: `k = N` is exact). `k ≥ whole_frac·N`: the side is kept whole.
+"""
+function _zskeleton(z::Vector{Float64}, fam; tol::Real, whole_frac::Real=0.8)
+    nb = BLAS.get_num_threads()
+    BLAS.set_num_threads(1)              # the chunk loops are threaded: nested BLAS threads are ≈ 10× slower
+    try
+        return _zskeleton_serial_blas(z, fam; tol=tol, whole_frac=whole_frac)
+    finally
+        BLAS.set_num_threads(nb)
+    end
+end
+
+function _zskeleton_serial_blas(z::Vector{Float64}, fam; tol::Real, whole_frac::Real)
+    N = length(z)
+    whole = ZSkeleton(collect(1:N), Matrix{ComplexF64}(I, N, N), 0.0, 1.0, true)
+    N <= 1 && return whole
+    # TSQR: one triangular factor per task, then the factor of the stacked factors
+    stackR(R, A) = Matrix(qr!(vcat(R, A)).R)
+    Rs = _fold_chunks(stackR, () -> zeros(ComplexF64, 0, N), fam, z)
+    R = foldl(stackR, Rs; init=zeros(ComplexF64, 0, N))
+    size(R, 1) < N && (R = vcat(R, zeros(ComplexF64, N - size(R, 1), N)))
+    F = qr(R, ColumnNorm())
+    p, Rt = F.p, F.R
+    function interp(k)
+        P = zeros(ComplexF64, N, k)
+        for q in 1:k
+            P[p[q], q] = 1
+        end
+        k < N && (P[p[k+1:N], :] .= transpose(UpperTriangular(Rt[1:k, 1:k]) \ Rt[1:k, k+1:N]))
+        perm = sortperm(p[1:k])                       # skeleton planes in increasing order
+        return p[1:k][perm], P[:, perm]
+    end
+    maxerr(idx, P) = maximum(_fold_chunks((e, A) -> max(e, maximum(abs, mul!(A, A[:, idx], transpose(P), -1, 1))),
+                                          () -> 0.0, fam, z))
+    lo, hi = 0, N
+    while hi - lo > 1
+        mid = (lo + hi) ÷ 2
+        maxerr(interp(mid)...) <= tol ? (hi = mid) : (lo = mid)
+    end
+    hi >= whole_frac * N && return whole
+    idx, P = interp(hi)
+    return ZSkeleton(idx, P, maxerr(idx, P), opnorm(P), false)
+end
+
+"""
+Observation-side family of layer `o` (local `z'`, as `_obs_phases`): `e^{iKZf·z'}`
+and `e^{iKZb·(z'−d)}`. Layer 1 carries the downward wave only and the last layer
+the upward one only (the other rows of `T^o` are exactly 0 there).
+"""
+function _obs_family(KZf, KZb, d, o, nlayers)
+    fam = Tuple{Vector{ComplexF64},Float64,Float64}[]
+    o == 1 || push!(fam, (_qlist(KZf), 1.0, 0.0))
+    o == nlayers || push!(fam, (_qlist(KZb), 1.0, -Float64(d)))
+    return fam
+end
+
+"""
+Source-side family of layer `s` (cavity-frame `zpos`, as `_seed_phases`):
+`Ψf = e^{iQf(d−zpos)}`, `Ψb = e^{−iQb·zpos}`; a source in layer 1 feeds only through
+`Ψf` (the `Ψb` columns of `T^o` are 0). The box factor `D(Q)` and the seeds are
+per-node constants and do not enter.
+"""
+function _src_family(Qf, Qb, d, s)
+    fam = [(_qlist(Qf), -1.0, Float64(d))]
+    s == 1 || push!(fam, (_qlist(Qb), -1.0, 0.0))
+    return fam
+end
+
+"""
+    z_skeletons(Qsrc, Qobs, stack, s, zs_int, zobs, layers; tol) -> (src=ZSkeleton, obs=Dict)
+
+`Qsrc = (Qf, Qb)` of source layer `s` and `Qobs[o] = (KZf, KZb)` for `o ∈ layers`,
+on every quadrature node (any arrays of numbers or 2-vectors). `zs_int`: the
+source planes in increasing `zpos` order (as the operator stores them).
+"""
+function z_skeletons(Qsrc, Qobs, stack, s, zs_int, zobs, layers; tol::Real)
+    d = stack[s].d
+    zpos = s == 1 ? d .- collect(Float64, zs_int) : collect(Float64, zs_int)
+    src = _zskeleton(zpos, _src_family(Qsrc..., d, s); tol=tol)
+    obs = Dict{Int,ZSkeleton}()
+    for o in layers
+        obs[o] = _zskeleton(collect(Float64, zobs[o]), _obs_family(Qobs[o]..., stack[o].d, o, length(stack)); tol=tol)
+    end
+    return (src=src, obs=obs)
+end
+
+_cache_skeletons(cache, zs_int, zobs; tol) =
+    z_skeletons((cache.Qf_src, cache.Qb_src), Dict(o => (cache.basis[o].KZf, cache.basis[o].KZb) for o in keys(zobs)),
+                cache.stack, cache.source_layer, zs_int, zobs, keys(zobs); tol=tol)
+
+"`Qf`, `Qb` (2 × n) of one layer at in-plane wavevectors `kts`, from the layer's own mode solve (no stack solve)."
+function _layer_Q(layer, ω, kts)
+    Qf = zeros(ComplexF64, 2, length(kts)); Qb = zeros(ComplexF64, 2, length(kts))
+    @threads for n in eachindex(kts)
+        try
+            mf, mb = _modes_layer(layer, ω, kts[n]...)
+            Qf[:, n] .= mf[3]; Qb[:, n] .= mb[3]
+        catch e
+            e isa Union{LinearAlgebra.SingularException, ErrorException, DomainError} || rethrow()
+        end
+    end
+    return Qf, Qb
+end
+
+"""
+    z_skeletons_grouped(stack, ω, source_layer, groups, z_src, z_obs_by_layer; tol=1e-6)
+
+The skeletons of `build_layer_operator_grouped`: one per side for ALL groups (the
+blocks are summed over groups, so they must share their skeleton planes), from
+each layer's `Q` at every `(kρ, φ)` node of every group (φ = 0 only on an
+azimuthally symmetric stack, where `Q` depends on kρ alone).
+"""
+function z_skeletons_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int, groups::AbstractVector,
+                             z_src::AbstractVector{<:Real}, z_obs_by_layer::AbstractDict; tol::Real=1e-6)
+    sym = _is_azimuthally_symmetric_stack(stack)
+    kts = [(kρ * cos(φ), kρ * sin(φ)) for g in groups for φ in (sym ? (0.0,) : g.φ) for kρ in g.kρ]
+    sym && unique!(kts)
+    zs = collect(Float64, z_src)
+    zs_int = source_layer == 1 ? reverse(zs) : zs
+    layers = collect(keys(z_obs_by_layer))
+    Q = Dict(l => _layer_Q(stack[l], Float64(ω), kts) for l in union(layers, [source_layer]))
+    return z_skeletons(Q[source_layer], Dict(o => Q[o] for o in layers), stack, source_layer, zs_int, z_obs_by_layer, layers; tol=tol)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Build
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -202,11 +417,20 @@ equal. `kwargs` go to `closed_form_G` (e.g. `box_lateral=(Δx,Δy)`, `Δz_box`,
 `lateral=:nufft`, `nufft_eps`).
 
 `structure`: `:auto` (media test + numerical check), `:structured` (force),
-`:dense` (no z structure in the same-layer block: `D` for everything, as a reference).
+`:dense` (no z structure anywhere: `D` for everything, as a reference).
+
+`skeleton=true`: the blocks with no Toeplitz/Hankel structure (cross layer, and
+the scattered part of a biaxial same-layer block) are stored on skeleton planes
+(`:skeleton`, `:toeplitz_skeleton`), each side interpolated from them to
+`skeleton_tol` per node term (`_zskeleton`). A side whose skeleton would hold
+≥ 80% of its planes is kept whole; with both sides whole the block stays dense.
+`skeletons`: precomputed `z_skeletons` (used by `build_layer_operator_grouped`, whose
+groups must share them); by default they are built from this cache's own `Q`s.
 """
 function build_layer_operator(cache::AbstractCavityTransferCache, grid::NamedTuple, z_src::AbstractVector{<:Real},
                               z_obs_by_layer::AbstractDict{Int,<:AbstractVector{<:Real}};
-                              structure::Symbol=:auto, check::Bool=true, check_tol::Real=1e-8, kwargs...)
+                              structure::Symbol=:auto, check::Bool=true, check_tol::Real=1e-8,
+                              skeleton::Bool=true, skeleton_tol::Real=1e-6, skeletons=nothing, kwargs...)
     structure in (:auto, :structured, :dense) || error("build_layer_operator: structure must be :auto, :structured or :dense")
     kw = NamedTuple(kwargs)
     s = cache.source_layer
@@ -218,6 +442,8 @@ function build_layer_operator(cache::AbstractCavityTransferCache, grid::NamedTup
     Px, Py = _padded_size(grid)
     blocks = ZBlock[]
     timings = Dict{Int,Float64}()
+    use_sk = skeleton && structure !== :dense
+    skel() = (skeletons === nothing && (skeletons = _cache_skeletons(cache, zs_int, z_obs_by_layer; tol=skeleton_tol)); skeletons)
 
     for o in sort(collect(keys(z_obs_by_layer)))
         zo = collect(Float64, z_obs_by_layer[o])
@@ -242,10 +468,10 @@ function build_layer_operator(cache::AbstractCavityTransferCache, grid::NamedTup
                 elseif structured
                     push!(blocks, _structured_block(cache, o, zs_int, zo, grid, Ns, No; kw...))
                 else
-                    push!(blocks, _toeplitz_dense_block(cache, o, zs_int, zo, grid, Ns, No; kw...))
+                    push!(blocks, _toeplitz_dense_block(cache, o, zs_int, zo, grid, Ns, No, use_sk ? skel() : nothing; kw...))
                 end
             else
-                push!(blocks, _dense_block(cache, o, zs_int, zo, grid, Ns, No; terms=:all, kw...))
+                push!(blocks, _dense_block(cache, o, zs_int, zo, grid, Ns, No, use_sk ? skel() : nothing; terms=:all, kw...))
             end
         end
         timings[o] = t
@@ -264,7 +490,9 @@ sum. A group with more than `node_budget` kρ × φ nodes is split into φ chunk
 (the cache of a 256-φ biaxial group does not fit in 16 GB with the build).
 `kwargs` go to `build_layer_operator`; every group must choose the same block
 kinds (true for the media rule, the structure check is skipped after the first
-group). `op.timings` holds the per-block build time summed over groups.
+group). The z skeletons are built once, on the nodes of all groups
+(`z_skeletons_grouped`), before the first cache. `op.timings` holds the per-block
+build time summed over groups.
 """
 function build_layer_operator_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int, groups::AbstractVector,
                                       grid::NamedTuple, z_src::AbstractVector{<:Real},
@@ -272,11 +500,16 @@ function build_layer_operator_grouped(stack::Vector{<:AbstractLayer}, ω::Real, 
                                       node_budget::Int=900_000, kwargs...)
     obs = sort(collect(keys(z_obs_by_layer)))
     op = nothing; t_cache = 0.0; t_build = 0.0
+    sk = get(kwargs, :skeletons, nothing)
+    if sk === nothing && get(kwargs, :skeleton, true) && get(kwargs, :structure, :auto) !== :dense
+        t_build += @elapsed sk = z_skeletons_grouped(stack, ω, source_layer, groups, z_src, z_obs_by_layer;
+                                                     tol=get(kwargs, :skeleton_tol, 1e-6))
+    end
     for g in groups
         chunk = clamp(node_budget ÷ max(length(g.kρ), 1), 1, length(g.φ))
         for r in Iterators.partition(eachindex(g.φ), chunk)
             t_cache += @elapsed c = build_cavity_transfer_2d(stack, ω, source_layer, g.kρ, g.wρ, g.φ[r], g.wφ[r]; obs_layers=obs)
-            t_build += @elapsed opc = build_layer_operator(c, grid, z_src, z_obs_by_layer; kwargs...,
+            t_build += @elapsed opc = build_layer_operator(c, grid, z_src, z_obs_by_layer; kwargs..., skeletons=sk,
                                                            check=(op === nothing && get(kwargs, :check, true)))
             c = nothing
             if op === nothing
@@ -284,6 +517,7 @@ function build_layer_operator_grouped(stack::Vector{<:AbstractLayer}, ω::Real, 
             else
                 for (b, bc) in zip(op.blocks, opc.blocks)
                     b.kind == bc.kind || error("build_layer_operator_grouped: groups chose different block kinds ($(b.kind) vs $(bc.kind))")
+                    (b.Ps === bc.Ps && b.Po === bc.Po) || error("build_layer_operator_grouped: groups have different z skeletons")
                     for f in (:Tz, :Hz, :D)
                         x = getfield(b, f)
                         x === nothing || (x .+= getfield(bc, f))
@@ -339,14 +573,29 @@ function _dense_planes(cache, o, zs, zo, grid, Ns, No; terms, kw...)
     return D
 end
 
-_dense_block(cache, o, zs, zo, grid, Ns, No; terms, kw...) =
-    ZBlock(o, zo, :dense, 0, nothing, nothing, _dense_planes(cache, o, zs, zo, grid, Ns, No; terms=terms, kw...))
+"""
+`D` of one block, on the skeleton planes of each side that is not kept whole:
+`(D, Ps, Po, skeletal)`; `skeletal = false` (full `D`, both `nothing`) without
+skeletons or with both sides whole.
+"""
+function _planes_maybe_skeleton(cache, o, zs, zo, grid, Ns, No, sk; terms, kw...)
+    (sk === nothing || (sk.src.whole && sk.obs[o].whole)) &&
+        return _dense_planes(cache, o, zs, zo, grid, Ns, No; terms=terms, kw...), nothing, nothing, false
+    s_, o_ = sk.src, sk.obs[o]
+    D = _dense_planes(cache, o, zs[s_.idx], zo[o_.idx], grid, length(s_.idx), length(o_.idx); terms=terms, kw...)
+    return D, s_.whole ? nothing : s_.P, o_.whole ? nothing : o_.P, true
+end
 
-function _toeplitz_dense_block(cache, o, zs, zo, grid, Ns, No; kw...)
+function _dense_block(cache, o, zs, zo, grid, Ns, No, sk=nothing; terms, kw...)
+    D, Ps, Po, skl = _planes_maybe_skeleton(cache, o, zs, zo, grid, Ns, No, sk; terms=terms, kw...)
+    return ZBlock(o, zo, skl ? :skeleton : :dense, 0, nothing, nothing, D, Ps, Po)
+end
+
+function _toeplitz_dense_block(cache, o, zs, zo, grid, Ns, No, sk=nothing; kw...)
     Lz = _zlen(Ns, No)
     Tz = _toeplitz_z(cache, o, zs, zo, grid, Ns, No, Lz; terms=:direct, kw...)
-    D = _dense_planes(cache, o, zs, zo, grid, Ns, No; terms=:scattered, kw...)
-    return ZBlock(o, zo, :toeplitz_dense, Lz, Tz, nothing, D)
+    D, Ps, Po, skl = _planes_maybe_skeleton(cache, o, zs, zo, grid, Ns, No, sk; terms=:scattered, kw...)
+    return ZBlock(o, zo, skl ? :toeplitz_skeleton : :toeplitz_dense, Lz, Tz, nothing, D, Ps, Po)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +634,27 @@ function _dense_add!(Ê::Array{ComplexF64,4}, D::Array{ComplexF64,6}, Ĵ::Array{
     return Ê
 end
 
+"`X[.., q, c] = Σ_i Ĵ[.., i, c]·Ps[i, q]`: the source planes folded onto the skeleton planes (one GEMM per component)."
+function _zfold(Ĵ::Array{ComplexF64,4}, Ps::Matrix{ComplexF64})
+    Px, Py, Ns, _ = size(Ĵ)
+    X = Array{ComplexF64,4}(undef, Px, Py, size(Ps, 2), 3)
+    A, B = reshape(Ĵ, Px * Py, Ns, 3), reshape(X, Px * Py, size(Ps, 2), 3)
+    for c in 1:3
+        mul!(view(B, :, :, c), view(A, :, :, c), Ps)
+    end
+    return X
+end
+
+"`Ê[.., j, r] += Σ_p Po[j, p]·Ês[.., p, r]`: the skeleton observation planes interpolated to all planes."
+function _zexpand_add!(Ê::Array{ComplexF64,4}, Ês::Array{ComplexF64,4}, Po::Matrix{ComplexF64})
+    Px, Py, No, _ = size(Ê)
+    A, B = reshape(Ês, Px * Py, size(Po, 2), 3), reshape(Ê, Px * Py, No, 3)
+    for r in 1:3
+        mul!(view(B, :, :, r), view(A, :, :, r), transpose(Po), true, true)
+    end
+    return Ê
+end
+
 "Zero-pad `Ĵ2[:, :, 1:Ns, :]` (or its plane-reversed copy) to `Lz` along z and FFT along z."
 function _zpad_fft(Ĵ2::Array{ComplexF64,4}, Lz::Int; reversed::Bool=false)
     Px, Py, Ns, _ = size(Ĵ2)
@@ -412,6 +682,7 @@ function apply_operator(op::LayerGreenOperator, P::AbstractArray{<:Number,4})
 
     zcache = Dict{Tuple{Int,Bool},Array{ComplexF64,4}}()
     zspec(L, rev) = get!(() -> _zpad_fft(Ĵ2, L; reversed=rev), zcache, (L, rev))
+    folded = IdDict{Matrix{ComplexF64},Array{ComplexF64,4}}()      # one fold per source skeleton
 
     out = Dict{Int,Array{ComplexF64,4}}()
     for b in op.blocks
@@ -424,7 +695,16 @@ function apply_operator(op::LayerGreenOperator, P::AbstractArray{<:Number,4})
             bfft!(Ez, 3)
             @views Ê .+= Ez[:, :, 1:No, :]
         end
-        b.D === nothing || _dense_add!(Ê, b.D, Ĵ2)
+        if b.D !== nothing
+            Ĵs = b.Ps === nothing ? Ĵ2 : get!(() -> _zfold(Ĵ2, b.Ps), folded, b.Ps)
+            if b.Po === nothing
+                _dense_add!(Ê, b.D, Ĵs)
+            else
+                Ês = zeros(ComplexF64, Px, Py, size(b.Po, 2), 3)
+                _dense_add!(Ês, b.D, Ĵs)
+                _zexpand_add!(Ê, Ês, b.Po)
+            end
+        end
         _plan(:bfft, Ê) * Ê
         out[b.obs_layer] = Ê[1:g.Nx, 1:g.Ny, :, :]
     end
@@ -455,10 +735,12 @@ end
 function operator_summary(op::LayerGreenOperator; io::IO=stdout)
     tot = 0
     for b in op.blocks
-        bytes = sum(x === nothing ? 0 : sizeof(x) for x in (b.Tz, b.Hz, b.D))
+        bytes = sum(x === nothing ? 0 : sizeof(x) for x in (b.Tz, b.Hz, b.D, b.Ps, b.Po))
         tot += bytes
-        @printf(io, "  source layer %d → obs layer %d: %-15s %3d obs planes  %8.1f MB  built in %.2f s\n",
-                op.source_layer, b.obs_layer, b.kind, length(b.z_obs), bytes / 2^20, op.timings[b.obs_layer])
+        sk = b.kind in (:skeleton, :toeplitz_skeleton) ?
+             @sprintf("  skeleton %d × %d of %d × %d planes", size(b.D, 5), size(b.D, 6), length(op.z_src), length(b.z_obs)) : ""
+        @printf(io, "  source layer %d → obs layer %d: %-17s %3d obs planes  %8.1f MB  built in %.2f s%s\n",
+                op.source_layer, b.obs_layer, b.kind, length(b.z_obs), bytes / 2^20, op.timings[b.obs_layer], sk)
     end
     @printf(io, "  total %.1f MB\n", tot / 2^20)
 end
