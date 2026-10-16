@@ -1,0 +1,559 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\usepackage{microtype}
+\setlength{\emergencystretch}{2em}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\kt}{\mathbf{k}_t}
+\newcommand{\kn}{\mathbf{k}_n}
+\newcommand{\km}{\mathbf{k}_m}
+\newcommand{\bfrho}{\boldsymbol{\rho}}
+\newcommand{\Ghat}{\widehat{G}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\sinc}{\operatorname{sinc}}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{Step 3 of the precomputed Green's operator:\\
+z skeletons for the cross-layer and biaxial-scattered blocks}
+\author{YellowThinFilms --- branch \code{z-skeletons}}
+\date{16 October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The precomputed operator of \code{mod\_GreenOperator.jl} maps dipole moments on the
+voxel planes of a source layer to the field on the planes of every observation layer.
+Same-layer blocks in isotropic/uniaxial layers are Toeplitz + Hankel in the plane
+indices and are applied by a z-FFT. Cross-layer blocks, and the scattered part of a
+biaxial same-layer block, have no such structure; until now they were stored for every
+(source plane, observation plane) pair. This document derives what step 3 replaces them
+with, starting from the $\kt$-integral the code evaluates. In a homogeneous layer the
+z-dependence of every plane-wave component is an exponential $e^{\pm\ii Q z}$ fixed by
+the layer alone, so the field on all planes of a layer is interpolated from a few
+\emph{skeleton} planes with \emph{one} matrix, the same for every quadrature node.
+Because the matrix does not depend on the node, it commutes with the $\kt$-quadrature and
+the lateral FFT, and the operator needs the integral only on the skeleton pairs. We give
+the construction (an interpolative decomposition checked on every node), its error
+bound, the measured sizes, the apply algorithm and the validation.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{The integral being evaluated}
+\label{sec:integral}
+%======================================================================
+
+\subsection{Master identity}
+
+A source with moment $\mathbf{p}$ at depth $z$ in the source layer $s$, observed at depth
+$z'$ in layer $o$ and lateral offset $\bfrho=(\Delta x,\Delta y)$, produces the field
+\begin{equation}
+  E_c(\bfrho; z', z) \;=\; \sum_{q=1}^{3} G_{cq}(\bfrho; z', z)\, p_q,
+  \qquad
+  G_{cq}(\bfrho; z', z) \;=\; \iint \frac{\dd^2 \kt}{(2\pi)^2}\;
+     S(\kt)\, e^{\ii \kt\cdot\bfrho}\; \widetilde{G}_{cq}(\kt; z', z),
+  \label{eq:master}
+\end{equation}
+with $\kt=(k_\rho\cos\varphi, k_\rho\sin\varphi)$ conserved through the stack. $S$ is the
+lateral footprint factor of the source: $S\equiv 1$ for a point, and for a rectangular
+box of size $\Delta x_b\times\Delta y_b$
+\begin{equation}
+  S(\kt) = \sinc\!\left(\tfrac{k_x\Delta x_b}{2}\right)\sinc\!\left(\tfrac{k_y\Delta y_b}{2}\right),
+  \qquad \sinc u = \frac{\sin u}{u},
+\end{equation}
+the exact Fourier transform of the footprint (\code{box\_lateral\_factor}).
+
+\subsection{Separation in $(z', z)$ for one plane wave}
+
+For one $\kt$, each layer carries four Berreman eigenmodes: two forward ($f$) and two
+backward ($b$), with normal wavenumbers $Q_{f,1}, Q_{f,2}, Q_{b,1}, Q_{b,2}$
+($\operatorname{Im} Q_f \ge 0$, $\operatorname{Im} Q_b \le 0$). Write $Q^{(s)}$ for the
+source layer's wavenumbers and $K^{(o)}$ for the observation layer's. The response
+separates exactly (\code{mod\_CavityTransfer.jl}, \code{mod\_ClosedFormField.jl}):
+\begin{align}
+  \widetilde{G}_{cq}(\kt; z', z)
+  &= \widetilde{G}^{\,\mathrm{dir}}_{cq}(\kt; z', z)\,\delta_{os}
+   + \sum_{\beta\in\{f,b\}}\sum_{m=1}^{2}
+     e^{(o)}_{c;\beta m}(\kt)\;\Phi_{\beta m}(\kt; z')\; A_{\beta m, q}(\kt; z),
+  \label{eq:separation}\\
+  A_{\beta m, q}(\kt; z)
+  &= \sum_{\gamma\in\{f,b\}}\sum_{\nu=1}^{2}
+     T^{(o)}_{\beta m;\gamma\nu}(\kt)\; s_{\gamma\nu, q}(\kt)\; D_{\gamma\nu}(\kt)\; \Psi_{\gamma\nu}(\kt; z).
+  \label{eq:amplitude}
+\end{align}
+The pieces are:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Source side.} With $z_{\mathrm{pos}}$ the cavity-frame depth ($z_{\mathrm{pos}} = d_s - z$ in layer 1,
+  $z_{\mathrm{pos}}=z$ otherwise) and $d_s$ the source layer's thickness,
+  \begin{equation}
+    \Psi_{f\nu}(z) = e^{\ii Q^{(s)}_{f,\nu}(d_s - z_{\mathrm{pos}})},
+    \qquad
+    \Psi_{b\nu}(z) = e^{-\ii Q^{(s)}_{b,\nu}\, z_{\mathrm{pos}}}.
+    \label{eq:psi}
+  \end{equation}
+  $s_{\gamma\nu,q}$ is the point seed of moment $\hat{\mathbf{e}}_q$ (\code{Source\_projection\_Berreman\_xyz}),
+  and $D_{\gamma\nu} = \sinc(Q^{(s)}_{\gamma,\nu}\Delta z_b/2)$ the axial box factor ($D=1$ for a point).
+  The code forms $D\Psi$ together as a face difference, but mathematically it is the
+  product of a per-node constant and the exponential~\eqref{eq:psi} at the box centre.
+\item \textbf{Stack.} $T^{(o)}(\kt)$ is a $4\times4$ matrix per node and observation layer: the
+  cavity resummation and the walk to layer $o$. It depends on neither $z$ nor $z'$.
+\item \textbf{Observation side.} $e^{(o)}_{c;\beta m}$ is component $c$ of the mode field of mode $(\beta,m)$, and
+  \begin{equation}
+    \Phi_{f m}(z') = e^{\ii K^{(o)}_{f,m} z'},
+    \qquad
+    \Phi_{b m}(z') = e^{\ii K^{(o)}_{b,m}(z' - d_o)}.
+    \label{eq:phi}
+  \end{equation}
+\item \textbf{Direct term.} $\widetilde{G}^{\,\mathrm{dir}}$ is the source's own radiation in its layer: forward
+  branch for $z' > z_{\mathrm{pos}}$, backward branch below, and face ramps plus the local $E_z$
+  inside a box's own slab. It is the only non-separable piece: it contains a Heaviside
+  step in $z'-z_{\mathrm{pos}}$.
+\end{itemize}
+
+\begin{proposition}[Bounded exponentials]
+\label{prop:bounded}
+All of $\abs{\Psi_{\gamma\nu}(z)}$ and $\abs{\Phi_{\beta m}(z')}$ are $\le 1$ for planes inside their layers.
+\end{proposition}
+\begin{proof}
+Each exponent is $\ii Q\ell$ with $\ell$ the distance from the plane to the interface
+the wave is referenced to, and the sign of $\operatorname{Im} Q$ makes the wave decay
+away from that interface. Forward: $\operatorname{Im} Q_f\ge0$ and $\ell=d_s-z_{\mathrm{pos}}\ge0$, or
+$\ell=z'\ge0$. Backward: $\operatorname{Im} Q_b\le0$ and $\ell=-z_{\mathrm{pos}}\le0$, or
+$\ell=z'-d_o\le 0$. In each case $\operatorname{Re}(\ii Q\ell)\le0$.
+\end{proof}
+
+\subsection{Quadrature}
+
+The code evaluates \eqref{eq:master} on a $(k_\rho,\varphi)$ rule: nodes $\kn$ with weights
+$w^\rho_n w^\varphi_n$, adaptive in $k_\rho$ (\code{box\_k$\rho$\_grid}, or one $k_\rho$ rule per
+$\varphi$ group, \code{box\_k$\rho$\_grid\_grouped}). The node weight used in \code{closed\_form\_G} is
+\begin{equation}
+  W_n = \frac{\ii\,\omega\, k_{\rho,n}\, w^\rho_n\, w^\varphi_n}{8\pi^3}\; S(\kn),
+  \label{eq:weights}
+\end{equation}
+that is, the polar Jacobian $k_\rho$ and the $1/(2\pi)^2$ of \eqref{eq:master}, times the
+code's prefactor $\ii\omega/(2\pi)$. Let $g_n(z',z)\in\mathbb{C}^{3\times3}$ be the
+separable part of $\widetilde G(\kn; z', z)$, i.e.\ the double sum in \eqref{eq:separation}.
+The discrete field is then
+\begin{equation}
+  G(\bfrho; z', z) \;\approx\; \sum_n W_n\, e^{\ii\kn\cdot\bfrho}\, g_n(z', z)
+  \;+\; (\text{direct term, same layer}).
+  \label{eq:discrete}
+\end{equation}
+The lateral sum is done exactly or by a type-1 NUFFT (accuracy \code{nufft\_eps}).
+Both are linear in the per-node strengths $W_n g_n$, which is all that is used below.
+
+\paragraph{Rank $\le 4$ per node.}
+Collect the four source-side exponentials in $\psi_n(z) = (\Psi_{f1},\Psi_{f2},\Psi_{b1},\Psi_{b2})^{\mathsf T}$
+and the four observation-side ones in $\phi_n(z')$. Then \eqref{eq:separation}--\eqref{eq:amplitude} read
+\begin{equation}
+  g_{n,cq}(z',z) = \phi_n(z')^{\mathsf T}\, C_{n,cq}\, \psi_n(z),
+  \qquad
+  \bigl(C_{n,cq}\bigr)_{\beta m,\gamma\nu} = e^{(o)}_{c;\beta m}\,T^{(o)}_{\beta m;\gamma\nu}\,s_{\gamma\nu,q}\,D_{\gamma\nu},
+  \label{eq:outer}
+\end{equation}
+with $C_{n,cq}\in\mathbb{C}^{4\times4}$. Every source--observation dependence of one node passes through four
+edge amplitudes, so on any set of planes $g_n$ has rank $\le 4$. It has rank $\le2$ into a
+semi-infinite layer, where only outgoing waves exist (\S\ref{sec:onesided}).
+
+%======================================================================
+\section{From the integral to the precomputed operator}
+\label{sec:operator}
+%======================================================================
+
+\subsection{Lateral FFT on the padded offsets}
+
+The sources sit on an $N_x\times N_y$ pixel grid with spacings $\Delta x,\Delta y$, on planes
+$z_1<\dots<z_{N_s}$ of the source layer. The observation planes of layer $o$ are
+$z'_1<\dots<z'_{N_o}$. $G$ is sampled on the $P_x\times P_y=2N_x\times 2N_y$ padded offsets
+$\bfrho_{ab}=(a\Delta x, b\Delta y)$, $a=-N_x,\dots,N_x-1$ (\code{padded\_offsets}). Its
+transform is stored at the padded frequencies
+$\km = 2\pi\,(m_x/(P_x\Delta x),\, m_y/(P_y\Delta y))$:
+\begin{equation}
+  \Ghat_{ji}(\km) = \frac{1}{P_xP_y}\sum_{a,b} G(\bfrho_{ab}; z'_j, z_i)\, e^{-\ii\km\cdot\bfrho_{ab}}
+  \qquad(\code{\_ghat\_planes}).
+  \label{eq:ghat}
+\end{equation}
+With $\widehat{p}_i = \mathrm{FFT}(p_i)$ on the zero-padded grid, the field is
+\begin{equation}
+  \widehat{E}_j(\km) = \sum_{i=1}^{N_s} \Ghat_{ji}(\km)\,\widehat{p}_i(\km),
+  \qquad E_j = \mathrm{BFFT}(\widehat{E}_j)\big|_{N_x\times N_y},
+  \label{eq:apply}
+\end{equation}
+which is the exact linear convolution $\sum_i\sum_{\mathbf{x}'} G(\mathbf{x}-\mathbf{x}'; z'_j,z_i)\,p_i(\mathbf{x}')$:
+every source--observation offset is one of the $\bfrho_{ab}$, and $\mathrm{BFFT}\circ\mathrm{FFT}=P_xP_y$.
+
+\subsection{What a pixel frequency sees}
+
+Insert the node sum \eqref{eq:discrete} into \eqref{eq:ghat}:
+\begin{equation}
+  \Ghat_{ji}(\km) = \sum_n W_n\, \mathcal{K}(\kn - \km)\, g_n(z'_j, z_i),
+  \qquad
+  \mathcal{K}(\mathbf{q}) = \frac{1}{P_xP_y}\sum_{a,b} e^{\ii\mathbf{q}\cdot\bfrho_{ab}},
+  \label{eq:kernel}
+\end{equation}
+plus the direct term. $\mathcal{K}$ is a two-dimensional Dirichlet kernel. Its main lobe has width
+$2\pi/(P_x\Delta x)=2\pi/(4L)$ for a window of half-width $L$, so $\Ghat(\km)$ is a
+weighted sum over a \emph{bundle} of nodes around $\km$, plus their aliases $\km+2\pi\mathbf{n}/\Delta$.
+This truncation to the window is what makes \eqref{eq:apply} exact on the window, so it is not an error to be removed.
+
+\subsection{Block structure before step 3}
+
+Per (source layer, observation layer) the operator stores one block (\code{ZBlock}):
+\begin{itemize}[leftmargin=*]
+\item \textbf{Same layer, isotropic or uniaxial (azimuthally symmetric stack).} $g_n(z',z)$ depends on $z'-z_{\mathrm{pos}}$ (direct + matched-branch
+  reflections) and on $z'+z_{\mathrm{pos}}$ (cross-branch reflections) only. On uniform planes the block is
+  Toeplitz + Hankel, so $N_s+N_o-1$ planes each, applied by a z-FFT (\code{:structured}).
+\item \textbf{Same layer, biaxial.} The interfaces mix the two modes, which have different $Q$, so only the
+  direct term stays Toeplitz. The scattered part was stored for all $N_s N_o$ pairs (\code{:toeplitz\_dense}).
+\item \textbf{Cross layer.} $Q^{(s)}\ne K^{(o)}$, so there is no translation structure: all $N_sN_o$ pairs (\code{:dense}).
+\end{itemize}
+A dense block holds $P_xP_y\cdot 9\cdot N_s N_o$ complex numbers and needs $N_s N_o$ evaluations of
+\eqref{eq:discrete} (one \code{closed\_form\_G} row each). It was the memory and build bottleneck:
+\(\approx\)100--140~s and 600~MB per block at the benchmark's size L.
+
+\subsection{Why not four amplitudes per pixel frequency}
+\label{sec:four}
+
+By \eqref{eq:outer}, a node needs only $4(N_s+N_o)$ numbers: four edge amplitudes per source plane
+and per observation plane. In \eqref{eq:kernel}, however, every node of the bundle has its own $\psi_n$ and $\phi_n$:
+\begin{equation}
+  \Ghat(\km) = \sum_n \underbrace{W_n\,\mathcal{K}(\kn-\km)}_{\text{scalar}}\;\phi_n\,C_n\,\psi_n^{\mathsf T},
+\end{equation}
+a sum of many rank-4 terms with different exponentials, so the result is not rank 4. Measured on the dense blocks
+(\code{diagnostics/zrank\_study.jl}, 16 planes per layer, $\Delta=1/32$):
+\begin{itemize}[leftmargin=*]
+\item the best rank-4 approximation per $\km$ leaves $4\times10^{-2}$ of the cross block;
+\item capping $k_\rho$ below the pixel band, so that nothing aliases, does not change this;
+\item widening the window helps, but slowly.
+\end{itemize}
+The only exact version keeps the nodes in the apply: a type-2 NUFFT of every source plane from the pixels to the
+$\sim10^6$ nodes, the contraction with \eqref{eq:outer}, and a type-1 NUFFT back. That is
+$\sim 10^6/(P_xP_y)\approx 250$ times more points per plane than the lateral FFTs at every apply, so it is not used.
+
+%======================================================================
+\section{z skeletons}
+\label{sec:skeleton}
+%======================================================================
+
+\subsection{The exponential family of a layer}
+
+The idea is to compress what all nodes share, not each $\km$. Every node's dependence on the observation
+planes of layer $o$ lies in the span of
+\begin{equation}
+  \mathcal{F}^{\mathrm{obs}}_o = \Bigl\{\, \bigl(e^{\ii K z'_j}\bigr)_{j=1}^{N_o} : K\in\{K^{(o)}_{f,m}(\kn)\}_{n,m} \Bigr\}
+  \;\cup\;
+  \Bigl\{\, \bigl(e^{\ii K (z'_j-d_o)}\bigr)_{j=1}^{N_o} : K\in\{K^{(o)}_{b,m}(\kn)\}_{n,m} \Bigr\},
+  \label{eq:famobs}
+\end{equation}
+and its dependence on the source planes in the span of
+\begin{equation}
+  \mathcal{F}^{\mathrm{src}}_s = \Bigl\{\, \bigl(e^{\ii Q (d_s-z_{\mathrm{pos},i})}\bigr)_{i=1}^{N_s} : Q\in\{Q^{(s)}_{f,\nu}(\kn)\} \Bigr\}
+  \;\cup\;
+  \Bigl\{\, \bigl(e^{-\ii Q z_{\mathrm{pos},i}}\bigr)_{i=1}^{N_s} : Q\in\{Q^{(s)}_{b,\nu}(\kn)\} \Bigr\}.
+  \label{eq:famsrc}
+\end{equation}
+Arrange each family as a matrix $F\in\mathbb{C}^{N\times M}$: one row per plane, one column per (node, mode, branch).
+After removing duplicate $Q$ values, $M\sim 10^5$--$10^6$. The families depend on the layer's
+dispersion and the planes only, \emph{not} on the stack. The stack (reflections, guided modes,
+plasmons) lives entirely in the coefficients $C_n$ of \eqref{eq:outer}. The box factor $D$ and the seeds are
+per-node constants and do not enter either.
+
+\paragraph{Physical reading.} A plane wave entering a homogeneous layer keeps its $\kt$, so its z-profile there is set by the layer
+alone. $F$ has two parts:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Propagating part} ($Q$ real in $[0, n k_0]$, with $n$ the layer's index): a band-limited family. Its numerical
+  dimension is the Nyquist count $\approx 2 n t/\lambda$ per direction, for a layer of thickness $t$, plus a
+  term in $\log(1/\tau)$ (prolate spheroidal functions).
+\item \textbf{Evanescent part} ($e^{-\kappa\ell}$ with $\kappa\in[\kappa_{\min},\kappa_{\max}]$): a family of decaying
+  exponentials. These are nearly linearly dependent, and their numerical rank grows like
+  $\log(\kappa_{\max}/\kappa_{\min})\cdot\log(1/\tau)$.
+\end{itemize}
+Neither part grows with the number of planes beyond logarithmically, so a fine plane grid is
+highly redundant. The exception is a hyperbolic layer ($\varepsilon_{zz}<0<\varepsilon_t$), where
+$Q\approx\sqrt{\varepsilon_t/\abs{\varepsilon_{zz}}}\,k_\rho$ is real up to the $k_\rho$ cap. High-$k_t$ waves
+propagate there, the band limit exceeds the plane Nyquist frequency $\pi/\Delta$, and the family has full rank.
+
+\subsection{One-sided families in semi-infinite layers}
+\label{sec:onesided}
+
+In the bottom layer (layer 1) no wave comes from $-\infty$, and in the top layer none from $+\infty$. So
+\begin{itemize}[leftmargin=*]
+\item observation layer 1 carries only the backward (downward) wave;
+\item the last layer carries only the forward one;
+\item a source in layer 1 feeds only through $\Psi_f$.
+\end{itemize}
+This was checked on a cache: the corresponding rows and columns of $T^{(o)}$ are exactly 0 for every node.
+The families drop the other branch (\code{\_obs\_family}, \code{\_src\_family}), which roughly halves their rank.
+
+\subsection{Interpolative decomposition}
+
+An interpolative decomposition (ID) of $F$ on its rows is a set of $R$ \emph{skeleton planes}
+$\mathcal{S}=\{\sigma_1<\dots<\sigma_R\}$ and a matrix $P\in\mathbb{C}^{N\times R}$ with $P_{\mathcal{S},:}=I$ such that
+\begin{equation}
+  \max_{j,\,\mu}\;\bigl|\,F_{j\mu} - \textstyle\sum_{r=1}^{R} P_{jr}\,F_{\sigma_r\mu}\bigr| \;\le\; \tau
+  \qquad\text{for \emph{every} column } \mu.
+  \label{eq:id}
+\end{equation}
+By Proposition~\ref{prop:bounded}, every entry of $F$ has modulus $\le1$, so $\tau$ is an absolute bound
+\emph{per node term}. In words: the value of every plane wave of the layer on every plane is reproduced, to
+$\tau$, from its values on the skeleton planes, with the same weights $P_{jr}$ for all waves.
+
+\subsection{Substitution into the integral}
+
+Let $(\mathcal S_s, P^s)$ and $(\mathcal S_o, P^o)$ be the IDs of \eqref{eq:famsrc} and \eqref{eq:famobs}. Applied to
+\eqref{eq:outer}, they give for every node, component pair $(c,q)$ and plane pair $(j,i)$
+\begin{equation}
+  g_n(z'_j, z_i) \;=\; \sum_{r=1}^{R_o}\sum_{r'=1}^{R_s} P^o_{jr}\,P^s_{ir'}\; g_n(z'_{\sigma^o_r}, z_{\sigma^s_{r'}})
+  \;+\; \varepsilon_{n,ji}.
+  \label{eq:node_interp}
+\end{equation}
+$P^o$ and $P^s$ do not depend on $n$. Multiplying by $W_n e^{\ii\kn\cdot\bfrho}$ and summing over $n$, then
+transforming by \eqref{eq:ghat}, therefore gives the same relation for the field and for its FFT:
+\begin{equation}
+  \boxed{\;\Ghat_{ji}(\km) \;=\; \sum_{r,r'} P^o_{jr}\,P^s_{ir'}\;\Ghat_{\sigma^o_r\,\sigma^s_{r'}}(\km) \;+\; \mathcal{E}_{ji}(\km)\;}
+  \label{eq:main}
+\end{equation}
+The interpolation commutes with the $\kt$-quadrature, the NUFFT (linear in the strengths), the window kernel
+$\mathcal K$ and the lateral FFT. So the block is fully determined by the integral \eqref{eq:master} evaluated
+on the $R_sR_o$ skeleton pairs only. This is the step that fails per $\km$ (\S\ref{sec:four}) and works per node.
+The same holds for the grouped build: the blocks of the $\varphi$ groups are summed, and \eqref{eq:main} holds
+group by group \emph{provided} all groups use the same $(\mathcal S, P)$.
+
+\begin{proposition}[Error bound]
+\label{prop:error}
+Write $\norm{P}_\infty=\max_j\sum_r\abs{P_{jr}}$ and $\norm{C}_1=\sum\abs{C_{\beta m,\gamma\nu}}$. Under \eqref{eq:id} for both sides,
+\begin{equation}
+  \abs{\varepsilon_{n,ji}} \le \tau\,\bigl(1+\norm{P^o}_\infty\bigr)\,\norm{C_n}_1,
+  \qquad
+  \abs{\mathcal{E}_{ji}(\km)} \le \tau\,\bigl(1+\norm{P^o}_\infty\bigr)\sum_n \abs{W_n\,\mathcal{K}(\kn-\km)}\,\norm{C_n}_1 .
+\end{equation}
+\end{proposition}
+\begin{proof}
+Write $\phi=P^o\phi_{\mathcal S}+\delta^o$ and $\psi=P^s\psi_{\mathcal S}+\delta^s$, with $\abs{\delta}\le\tau$ entrywise. Then
+$\phi^{\mathsf T}C\psi - (P^o\phi_{\mathcal S})^{\mathsf T}C(P^s\psi_{\mathcal S})
+= (P^o\phi_{\mathcal S})^{\mathsf T}C\,\delta^s + (\delta^o)^{\mathsf T}C\,\psi$.
+Use $\abs{P^o\phi_{\mathcal S}}\le\norm{P^o}_\infty$ and $\abs{\psi}\le1$, then sum over nodes.
+\end{proof}
+
+\begin{remark}[What the bound does and does not say]
+The bound is a priori and not sharp: it ignores cancellation between nodes and is relative to
+$\sum_n\abs{W_n C_n}$, not to $\abs{G}$.
+For a box, $D$ is folded into $C_n$ and grows like $e^{\abs{\operatorname{Im}Q}\Delta z_b/2}$ for deep-evanescent nodes,
+so the bound becomes weak exactly there. In practice the ID places skeleton planes next to both interfaces.
+For a glass layer at 64 planes and $\tau=10^{-6}$ they are planes $1$--$6$ and $59$--$64$, with sparser ones towards the middle:
+the evanescent waves vary fastest near the interfaces. The deep-evanescent columns are therefore reproduced
+\emph{exactly} on the planes where they are not negligible. Measured on that family: $\max_\mu \abs{\delta_\mu}\cdot\abs{D_\mu} = 6.6\times10^{-7}$,
+against $\max_\mu\abs{\delta_\mu} = 5.2\times10^{-7}$. The box factor does not degrade the interpolation.
+The field errors measured against the dense blocks are $0.1$--$0.7\,\tau$ relative (\S\ref{sec:validation}).
+\end{remark}
+
+%======================================================================
+\section{Construction}
+\label{sec:construction}
+%======================================================================
+
+\subsection{Algorithm (\code{\_zskeleton})}
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Exact compression of the columns.} Form $F^{\mathsf T}$ (nodes $\times$ planes) in chunks of 8192 rows and reduce it to its
+  $N\times N$ triangular factor $R$ by a threaded TSQR ($F^{\mathsf T} = Q_0R$). Since $Q_0$ has orthonormal columns,
+  a column ID of $R$ is a column ID of $F^{\mathsf T}$, with the same error in every norm. No column is
+  sampled, so the extreme evanescent nodes cannot be missed.
+\item \textbf{Pivot order.} Column-pivoted QR of $R$: $R\Pi = \widetilde Q\widetilde R$. For a rank $k$, the skeleton is the
+  first $k$ pivots, and $P$ follows from $\widetilde R_{11}^{-1}\widetilde R_{12}$, with the identity on the skeleton rows.
+\item \textbf{Rank chosen on every node.} For a candidate $k$, evaluate the left side of \eqref{eq:id} over all columns,
+  streamed again in chunks. Bisect for the smallest $k$ that satisfies \eqref{eq:id} ($k=N$ is exact).
+\item \textbf{Fallback.} If $k\ge0.8\,N$, keep the side whole ($\mathcal S=\{1..N\}$, $P=I$, stored as \code{nothing}).
+  If both sides of a block are whole, the block stays the plain \code{:dense} / \code{:toeplitz\_dense} one.
+\end{enumerate}
+\textbf{Cost.} About 2~s for 750k columns at 64 planes on 8 threads. BLAS is pinned to one thread inside: the
+chunk loops are threaded, and nested BLAS threads were $\approx10\times$ slower.
+\textbf{Interpolation norm.} $\norm{P}_2 = 1.8$ (16 planes) and $3.2$--$3.7$ (64 planes), with $\norm{P}_\infty\le 4.7$. The
+interpolation does not amplify errors.
+
+\subsection{Where the $Q$'s come from}
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Single cache} (\code{build\_layer\_operator}). The cache's own \code{Qf\_src}, \code{Qb\_src} and
+  \code{basis[o].KZf}, \code{KZb} are used: these are exactly the $Q$'s in \eqref{eq:psi}--\eqref{eq:phi}.
+\item \textbf{Grouped build} (\code{build\_layer\_operator\_grouped}). The blocks are summed over $\varphi$ groups and $\varphi$ chunks, so
+  all must share one skeleton (\S\ref{sec:skeleton}). \code{z\_skeletons\_grouped} builds it before the first cache, from
+  each layer's own mode solve (\code{\_modes\_layer}, a $4\times4$ eigenproblem, not a stack solve) at every $(k_\rho,\varphi)$
+  node of every group. On an azimuthally symmetric stack only $\varphi=0$ is used, since $Q$ depends on $k_\rho$ alone.
+  The set of $Q$'s is the same as in the caches: the stack solver only reorders modes.
+\end{itemize}
+The source skeleton is built in the operator's internal plane order (increasing $z_{\mathrm{pos}}$), so the
+reversed planes of layer 1 need no special handling.
+
+\subsection{Blocks}
+
+\begin{itemize}[leftmargin=*]
+\item \code{:skeleton} (cross layer) stores $\Ghat_{\sigma^o_r\sigma^s_{r'}}(\km)$ as \code{(Px, Py, 3, 3, R\_s, R\_o)}, plus $P^s$ and/or $P^o$.
+  The table is evaluated with the existing \code{\_dense\_planes} on the skeleton planes: no new kernel code.
+\item \code{:toeplitz\_skeleton} (biaxial same layer): the Toeplitz direct term, exactly as before, plus the scattered part as a
+  skeleton block. The direct term is not compressed: its Heaviside branch in $z'-z_{\mathrm{pos}}$ is not of the form
+  \eqref{eq:outer}, and it is already Toeplitz.
+\item Isotropic/uniaxial same-layer blocks are unchanged (\code{:structured}).
+\item \code{structure=:dense} disables the skeletons; it is the reference.
+\end{itemize}
+
+%======================================================================
+\section{Apply}
+\label{sec:apply}
+%======================================================================
+
+Equation \eqref{eq:apply} with \eqref{eq:main} becomes, per $\km$ and component:
+\begin{align}
+  \widehat{p}^{\,\mathrm{sk}}_{r'}(\km) &= \sum_{i=1}^{N_s} P^s_{ir'}\,\widehat p_i(\km), \label{eq:fold}\\
+  \widehat{E}^{\,\mathrm{sk}}_{r}(\km) &= \sum_{r'=1}^{R_s} \Ghat_{\sigma^o_r\sigma^s_{r'}}(\km)\,\widehat{p}^{\,\mathrm{sk}}_{r'}(\km), \label{eq:pairs}\\
+  \widehat{E}_j(\km) &\mathrel{+}= \sum_{r=1}^{R_o} P^o_{jr}\,\widehat{E}^{\,\mathrm{sk}}_r(\km). \label{eq:expand}
+\end{align}
+These are: \eqref{eq:fold} the fold of the source planes (\code{\_zfold}, one GEMM per component over all $\km$);
+\eqref{eq:pairs} the pair loop on the skeleton planes (\code{\_dense\_add!}); \eqref{eq:expand} the interpolation to
+all observation planes (\code{\_zexpand\_add!}, one GEMM per component).
+followed by the usual 2D inverse FFT. The fold depends only on the source skeleton, so it is computed once and
+shared by every block of the operator. Note that $\sum_i P^s_{ir'}\widehat p_i$ is the
+\emph{transpose} of the interpolation: \eqref{eq:node_interp} interpolates $G$ in its source argument, so the sum over sources
+$\sum_i G(\cdot,z_i)\,p_i$ becomes $\sum_{r'} G(\cdot,z_{\sigma^s_{r'}})\,(P^{s\mathsf T}p)_{r'}$.
+
+\textbf{Costs per $\km$}, compared with a dense block:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ & dense & skeleton \\
+\midrule
+memory (complex numbers) & $9N_sN_o$ & $9R_sR_o + (N_sR_s + N_oR_o)/(P_xP_y)$ \\
+build (\code{closed\_form\_G} rows) & $N_sN_o$ & $R_sR_o$ \\
+apply (multiply--adds) & $9N_sN_o$ & $3N_sR_s + 9R_sR_o + 3R_oN_o$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The grid ($k_\rho$ rule) and the cache (stack solve) are unchanged by step 3. The precompute therefore drops by
+less than the block ratio when those dominate.
+
+%======================================================================
+\section{Measured skeleton sizes}
+\label{sec:ranks}
+%======================================================================
+
+The table below gives the rank $k$ chosen by \eqref{eq:id} at $\tau = 10^{-4}/10^{-6}/10^{-9}$, without the 80\% rule
+(\code{diagnostics/zskeleton\_rank.jl}). The families use 6k $k_\rho\in[0,3000]$, $\times\,32$ $\varphi$ for the biaxial layers, both modes.
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccccc}
+\toprule
+ & \multicolumn{5}{c}{$t=0.5\lambda$, $N$ planes} & \multicolumn{2}{c}{$t=2\lambda$} \\
+\cmidrule(lr){2-6}\cmidrule(lr){7-8}
+layer & 8 & 16 & 32 & 64 & 128 & 64 & 128 \\
+\midrule
+vacuum cladding (outgoing) & 8/8/8 & 9/12/15 & 11/14/18 & 12/16/21 & 13/17/24 & 14/18/23 & 16/20/26 \\
+glass, obs = src & 8/8/8 & 12/15/16 & 15/19/24 & 18/23/30 & 20/27/36 & 21/25/33 & 23/30/38 \\
+biaxial $\varepsilon_{zz}=+2$ & 8/8/8 & 12/15/16 & 16/19/24 & 18/24/30 & 21/27/37 & 24/27/34 & 26/32/40 \\
+hyperbolic $\varepsilon_{zz}=-3.2$ & full & full & full & full & full & full & full \\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}[leftmargin=*]
+\item The rank grows logarithmically in $N$, as expected from the evanescent part.
+\item A 2$\lambda$ layer costs only 2--3 planes more than a 0.5$\lambda$ one at the same $N$: the propagating (Nyquist) part is
+  small next to the evanescent one.
+\item The biaxial family matches the glass one to $\pm1$ plane. The hyperbolic one is full rank, as predicted.
+\item The earlier estimate (\code{diagnostics/zfamily\_rank.jl}) counted singular values relative to $\sigma_1$ of a sampled family.
+  That under-counted by 1--4 planes, because $\sigma_1$ grows with the number of samples. Criterion \eqref{eq:id} does not
+  depend on sampling.
+\end{itemize}
+Expected size of a vacuum $\leftrightarrow$ glass cross block at $\tau=10^{-6}$, $R_oR_s/(N_oN_s)$:
+\begin{itemize}[leftmargin=*]
+\item 0.75 at 16 planes (the glass side is kept whole by the 80\% rule);
+\item 0.26 at 32;
+\item 0.09 at 64 (11$\times$);
+\item 0.028 at 128 (36$\times$).
+\end{itemize}
+The benchmark's present size (16 planes per layer) gains little. The gain is for fine $\Delta$ or many planes.
+
+%======================================================================
+\section{Validation}
+\label{sec:validation}
+%======================================================================
+
+\code{Gz\_ClosedForm\_Operator\_Validation.jl}, all sections PASS:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Exactness.} The tests [o] (operator vs the per-depth \code{closed\_form\_field} route), [g] (grouped $\varphi$ grid)
+  and [m] (cost) run with \code{skeleton=false} and are unchanged: $\le 1.3\times10^{-15}$; a shared grid split into groups agrees to $6\times10^{-16}$.
+\item \textbf{New [s].} Skeleton vs dense blocks for random moments on every plane, every observation layer,
+  $\Delta=1/32$, 0.75$\lambda$ claddings (24 planes), 0.5$\lambda$ middle layer (16 planes), $\tau=10^{-6}$:
+\end{itemize}
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{4.6cm}>{\raggedright\arraybackslash}p{6.8cm}c}
+\toprule
+case & blocks ($R_s\times R_o$) & rel.\ error \\
+\midrule
+iso box 2D, source layer 2 & $2\to1$: $16\times14$, $2\to2$: structured, $2\to3$: $16\times14$ & $7.6\times10^{-8}$ \\
+iso box 2D, source layer 1 (reversed planes) & $1\to2$: $14\times16$, $1\to3$: $14\times14$ & $7.7\times10^{-8}$ \\
+biaxial box 2D, layer 2 & $2\to1,3$: $16\times13$; $2\to2$ both sides whole & $4.4\times10^{-7}$ \\
+hyperbolic box 2D, layer 2 & source side whole on every block (fallback) & $3.4\times10^{-7}$ \\
+iso point, 1D cache, layer 2 & $2\to1,3$: $16\times13$ & $6.8\times10^{-7}$ \\
+grouped biaxial box, 3 groups & one shared skeleton & $4.4\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The error is $\norm{E-E_{\mathrm{dense}}}/\norm{E_{\mathrm{dense}}}$, maximised over observation layers.
+A smaller case (16 planes, $L=0.25$) gives field errors of $\approx 0.1\,\tau$ at $\tau=10^{-4}$ and $10^{-6}$.
+
+%======================================================================
+\section{Open points}
+%======================================================================
+\begin{itemize}[leftmargin=*]
+\item \textbf{Benchmark.} \code{Bench\_GreenOperator.jl} now has a 2$\lambda$ source-layer stack (\code{thick}, 64 source planes at size L) and
+  \code{BENCH\_SKELETON=0/1}. It has not been run yet.
+\item \textbf{Default $\tau=10^{-6}$.} This is 100$\times$ below the grouped grid's \code{rtol} $=10^{-4}$. Whether it should follow \code{rtol}
+  automatically is to be decided.
+\item \textbf{Hyperbolic layers.} Their own side cannot be compressed by any node-independent z basis (the band limit exceeds $\pi/\Delta$).
+  Only the other side of their cross blocks is compressed.
+\end{itemize}
+
+\appendix
+\section{Code map}
+\begin{center}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{6.2cm}>{\raggedright\arraybackslash}p{8.3cm}}
+\toprule
+symbol & code (\code{mod\_GreenOperator.jl} unless noted) \\
+\midrule
+$W_n$, \eqref{eq:weights}; $g_n$, \eqref{eq:discrete} & \code{closed\_form\_G}, \code{\_strengths\_row!} (\code{mod\_ClosedFormField.jl}) \\
+$\Psi$, \eqref{eq:psi}; $D\Psi$ & \code{\_seed\_phases}, \code{\_boxphase} (\code{mod\_ClosedFormField.jl}) \\
+$\Phi$, \eqref{eq:phi} & \code{\_obs\_phases}, \code{\_strengths\_row!} \\
+$T^{(o)}$, $s$, $Q$, $K$ & \code{CavityTransferCache2D} / \code{1D} (\code{mod\_CavityTransfer.jl}) \\
+$\Ghat(\km)$, \eqref{eq:ghat} & \code{\_ghat\_planes}, \code{\_dense\_planes} \\
+families \eqref{eq:famobs}--\eqref{eq:famsrc} & \code{\_obs\_family}, \code{\_src\_family}, \code{\_family\_rows}, \code{\_qlist} \\
+ID \eqref{eq:id} & \code{\_zskeleton} (TSQR via \code{\_fold\_chunks}, pivoted QR, bisection), \code{ZSkeleton} \\
+skeletons of one operator & \code{z\_skeletons}, \code{\_cache\_skeletons}, \code{z\_skeletons\_grouped}, \code{\_layer\_Q} \\
+blocks & \code{ZBlock} (fields \code{Ps}, \code{Po}), \code{\_planes\_maybe\_skeleton}, \code{\_dense\_block}, \code{\_toeplitz\_dense\_block} \\
+apply & \code{apply\_operator}, \code{\_zfold}, \code{\_dense\_add!}, \code{\_zexpand\_add!} \\
+keywords & \code{build\_layer\_operator(...; skeleton=true, skeleton\_tol=1e-6, skeletons=nothing)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

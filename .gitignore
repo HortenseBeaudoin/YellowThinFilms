@@ -6,3 +6,13 @@ logs/
 field_cache/
 greens_cache/
 .DS_Store
+
+# LaTeX build outputs (docs/*.tex is the source)
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+docs/*.pdf
