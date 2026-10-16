@@ -1,6 +1,6 @@
 # Status: closed-form rewrite (`PLAN_closed_form_point_source_rewrite.md`)
 
-Last updated 2026-10-14. Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
+Last updated 2026-10-16 (step 3 pre-study and plan: see "Step 3 pre-study and plan"). Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
 
 ## Repository state (2026-10-12)
 
@@ -44,7 +44,7 @@ The project now lives in a clone of the GitHub repository (this folder). The val
 - `UniformSource._forward_transform`/`_inverse_transform`/`_centering_ramp` are no longer used by the assembly.
 - **Next (planned).** A z-structured operator per (source layer, obs layers):
   - same layer: Toeplitz (direct, any material) + Hankel (scattered, iso/uniaxial; verified to 1e-15, broken by biaxial mode mixing at 3%);
-  - cross-layer and biaxial scattered: low-rank skeletons in z (measured ranks ~10 of 32 at 1e-6, except on a hyperbolic layer's own side), with dense per-pair as the fallback;
+  - cross-layer and biaxial scattered: low-rank skeletons in z (measured ranks ~10 of 32 at 1e-6, except on a hyperbolic layer's own side), with dense per-pair as the fallback; *(2026-10-16: how this was measured is not recorded; per pixel frequency the rank is much higher. See "Step 3 pre-study and plan".)*
   - apply via z-FFT / BLAS, accumulated in k-space.
 
 ## Branch `z-structured-operator` (2026-10-12, from `small-speedups`)
@@ -108,7 +108,74 @@ The project now lives in a clone of the GitHub repository (this folder). The val
   - Build is 70–90% of the precompute at L; the grouped grid's own cost is 70–120 s at L for biax (vs 15–20 s for the shared iso/uni grid), 573 s for hyp at 1e-3.
   - Hyp at δ = 1e-3 needs 38k / 41k / 46k kρ at S / M / L (run with `BENCH_KMAX=60000`; over the default 40k from M).
   - Not converged: hyp at δ = 1e-6. With 4 classes per group 16/17 tails stall (fixed-band fallback, 1,633 s grid at S); one class per group converges (55.7k kρ, see above) but was not benchmarked.
-- **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3). The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
+- **Next:** low-rank skeletons in z for the cross-layer blocks and the biaxial scattered block (step 3), planned in "Step 3 pre-study and plan" below. The cross-layer dense block now dominates memory and build time; layer 1 → 3 (48×64) would be ≈ 4 GB at this size.
+
+## Step 3 pre-study and plan (2026-10-16)
+
+Goal: replace the `Ns·No` plane pairs of the non-Toeplitz blocks (`:dense` cross layer, the scattered `D` of `:toeplitz_dense`), the main memory and build cost (≈ 100–140 s and 600 MB per block at L), by a factorisation in z. The apply should stay dominated by the lateral FFTs.
+
+### Why the z-FFT covers only the same layer
+
+The z-FFT needs translation invariance in z (Toeplitz: depends on `z' − z` only) or its mirror (Hankel, `z' + z`, image sources). Both hold only when source and observation sit in the same homogeneous medium: `k_t` is conserved at every interface, `k_z` is not. The direct term is Toeplitz in any medium; the reflections are Toeplitz + Hankel only without mode mixing (isotropic, or uniaxial in an azimuthally symmetric stack). Cross-layer and biaxial-reflected blocks have no such structure. What they do have is separability: per quadrature node, `Ψ_n(z', z) = Φ_n(z')ᵀ·C_n·Ψ_n(z)`, i.e. everything passes through the source layer's edge amplitudes `[sf∘e^{iQf(d−z)}; sb∘e^{−iQb z}]` (the input of `T^o` in `amplitude_at`). The z-rank per node is ≤ 4, and ≤ 2 into a semi-infinite cladding, which carries outgoing waves only (checked: σ₅/σ₁ ≈ 1e-14 on a 1- and 2-node cache).
+
+### Measured: per pixel frequency the rank is not 4 (`diagnostics/zrank_study.jl`)
+
+Box source in layer 2 of a 3-layer stack, cubic voxel Δ = 1/32, 16 planes per layer, 32² px, max-precision quadrature (`kρ_cap` 3000, 256 φ, `nufft_eps` 1e-12). Per lateral pixel frequency `k_m`, `D(k_m)` as a (3·No) × (3·Ns) matrix; ranks relative to the block's largest σ (the 3 components are counted, so full rank is 48).
+
+| block | rank per k_m @1e-6, max (mean) | best rank-4 error (Frobenius) | basis shared by all k_m @1e-6, obs / source side |
+|---|---|---|---|
+| iso δ = 1e-3, 2 → 1 / 2 → 3 (cross) | 16 (12.3) | 4.2e-2 | 31 / 33 |
+| iso, 2 → 2 scattered | 21 (17.0) | 1.7e-1 | 42 / 42 |
+| biax εzz = +2, δ = 1e-3, cross | 17 (12.8) | 4.3e-2 | 30 / 36 |
+| biax, 2 → 2 scattered | 23 (18.0) | 1.8e-1 | 42 / 42 |
+| hyp εzz = −3.2, δ = 1e-1, cross | 25 (18.7) | 1.6e-2 | 30 / **48** |
+| hyp, 2 → 2 scattered | **48** (48) | 1.6e-1 | **48 / 48** |
+
+- An edge state of 4 amplitudes per `k_m` is **not** exact: 4e-2 relative error on cross blocks. The rank-4 residual is spread evenly over all planes, not concentrated next to the interface.
+- **Cause: the finite lateral window, not aliasing.** At Δ = 1/8: capping kρ below the pixel band (`kρ_cap` = 20 < π/Δ, no node can alias) leaves the rank unchanged; loss (δ = 1e-3 → 1) barely changes it; a wider window helps (e₄ 4.4e-2 → 1.3e-2 from L = 0.5 to 2 at δ = 1e-1). `Ĝ(k_m)` is G truncated to the padded offsets, i.e. its spectrum smeared by a Dirichlet kernel ≈ 2π/(4L) wide (≈ k₀/2 at L = 0.5), which mixes many `k_t` with very different `Q`. That is what makes the operator exact on the window, so it cannot be avoided per `k_m`.
+- Compressing per `k_m` (SVD of each `D(k_m)`) would save ≈ 1.5× at 16 planes, at 1e-6, and would still need the full `D` to build. Not worth it.
+
+### What works: a node-independent skeleton per layer (`diagnostics/zfamily_rank.jl`)
+
+Expand the z-dependence **per node, before the lateral binning**, on a basis shared by every node: `e^{iQ(k_t)z'} ≈ Σ_p U_p(z')·α_p(k_t)`. `U` is not touched by the binning (window, aliases), so the error is only the truncation of the exponential family, set by a tolerance τ. The family is known analytically per layer (its `Q`s and planes), with no stack solve. Its numerical rank grows only logarithmically with the number of planes N (0.5-thick layer, kρ ∈ [0, 3000]):
+
+| family, rank @1e-6 (@1e-9) | N = 8 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| vacuum cladding, outgoing waves only | 8 (8) | 11 (14) | 12 (17) | 14 (19) | 16 (22) |
+| glass layer, both directions | 8 (8) | 14 (16) | 17 (23) | 21 (28) | 24 (33) |
+| hyperbolic layer (εzz = −3.2), both directions | full | full | full | full | full |
+
+The shared-basis columns of the table above agree: 31/48 ≈ 3 × 10.3 on the vacuum side, consistent with 11 at N = 16. Expected saving on a cross block, `(R_o·R_s)/(No·Ns)` in memory and build: ≈ 0.6 at 16 planes (1e-6), ≈ 0.07 at 64 planes (≈ 14×), ≈ 0.025 at 128. Step 3 pays off for many planes per layer (thick layers, fine Δ), little at the benchmark's 16. A hyperbolic layer's own side cannot be compressed (high-kρ waves propagate there): keep it dense on that side.
+
+At 16 planes the dense pair-loop apply (`9·Ns·No` per `k_m`) costs about as much as the lateral FFTs, so the apply is not the issue at that size; memory and build are.
+
+### Plan (new branch from `main`, new session)
+
+1. **Skeleton bases per layer and plane grid (interpolative decomposition).** For each layer ℓ in the operator, the family matrix `F_ℓ[j, n]`:
+   - observation side: `e^{iKZf·z'_j}`, `e^{iKZb·(z'_j−d)}` for every node and mode of `cache.basis[ℓ]`; outgoing branch only in a semi-infinite layer;
+   - source side: `e^{iQf(d−z_i)}`, `e^{−iQb z_i}` from `cache.Qf_src`/`Qb_src`; the box factor `D` and the seeds are per-node constants and don't enter.
+
+   Column-pivoted QR, or an ID on rows, at tolerance τ (default 1e-9, well below the quadrature `rtol`), gives skeleton planes `𝒮_ℓ` (R_ℓ of them) and an interpolation matrix `P_ℓ` (N × R_ℓ) with `F_ℓ ≈ P_ℓ·F_ℓ[𝒮_ℓ, :]` for **every** node. All entries are bounded by 1 (each exponential decays into the layer), so τ is a relative bound per node term. `F` has ~10⁶ columns: sample them, e.g. all kρ at a few φ, or a randomized ID, then check on all nodes.
+2. **New block kind `:skeleton`** (cross layer) and `:toeplitz_skeleton` (biaxial same layer: Toeplitz direct + skeleton scattered). Store `D_sk = Ĝ(k_m; 𝒮_o, 𝒮_s)` as `(Px, Py, 3, 3, R_s, R_o)`, plus `P_o` (No × R_o) and `P_s` (Ns × R_s).
+   - **Build** with the existing `_dense_planes` on the skeleton pairs only: no new kernel code, R_s·R_o `closed_form_G` rows instead of Ns·No.
+   - **Exactness:** source side `Σ_i G(z', z_i)·J_i = Σ_q G(z', z_{s_q})·(P_sᵀ J)_q`; observation side `G(z'_j, ·) = Σ_p P_o[j, p]·G(z'_{o_p}, ·)`. Both hold to τ per node, so also after binning.
+3. **Apply:**
+   1. `Ĵ_sk = P_sᵀ·Ĵ2` along z: one GEMM, the same matrix for every `k_m`;
+   2. the pair loop on `R_s × R_o`;
+   3. `Ê = P_o·Ê_sk` along z: one GEMM;
+   4. the existing 2D iFFT.
+
+   Batch the small products over all `Px·Py` frequencies.
+4. **Automatic fallback:** if `R_ℓ ≥ 0.8·N` on a side (hyperbolic layer), use identity on that side (all planes are skeletons). It falls back to `:dense` when both sides are full. Iso/uniaxial same-layer blocks keep Toeplitz + Hankel.
+5. **Validation:**
+   - `Gz_ClosedForm_Operator_Validation.jl`: skeleton vs dense for random moments, all layers, point/box, source layers 1/2, iso/biax, to ≈ τ × (‖P‖ growth);
+   - the existing [o]/[g] tests keep passing;
+   - a hyperbolic case checks the fallback.
+6. **Benchmark:** `Bench_GreenOperator.jl` S/M/L as before, plus a thick-layer case (64 planes in a cladding or a 2λ source layer), where the ≈ 10× saving is expected. Report memory, build, apply per block, and R per layer.
+7. **Open points:**
+   - the choice of τ, and whether `P` (an ID) amplifies errors more than an orthogonal `U`: check ‖P‖;
+   - sampling the ~10⁶ family columns without missing the evanescent extremes;
+   - layer 1's flipped plane order (`flip`).
 
 ## Changes since 2026-09-24
 
