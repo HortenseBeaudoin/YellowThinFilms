@@ -1,6 +1,6 @@
 # Status: closed-form rewrite (`PLAN_closed_form_point_source_rewrite.md`)
 
-Last updated 2026-10-16 (step 3, z skeletons, implemented and validated on branch `z-skeletons`: see "Branch `z-skeletons`"; benchmark pending). Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
+Last updated 2026-10-16 (step 3, z skeletons, implemented, validated and benchmarked on branch `z-skeletons`: see "Branch `z-skeletons`"). Phases 0–8 of the plan are implemented and validated, and the legacy implementation has been removed from the project (see "Cleanup"). The comparison against GilaElectromagnetics has been ported to the closed-form box and run (see "Gila comparison"), and followed by the anisotropic study of 2026-09-28/30 (see "Changes since 2026-09-24"). Next: move the project into a git checkout of the GitHub repository (see "Repository state"), then the quasi-static (Newell) subtraction (§4.2) and the speed-up of the 2D box materialization.
 
 ## Repository state (2026-10-12)
 
@@ -185,7 +185,7 @@ At 16 planes the dense pair-loop apply (`9·Ns·No` per `k_m`) costs about as mu
 
 ## Branch `z-skeletons` (2026-10-16, from `main`): step 3
 
-Steps 1–5 of the plan are in `mod_GreenOperator.jl`; the benchmark (step 6) is pending.
+Steps 1–6 of the plan are done: the code is in `mod_GreenOperator.jl`, the benchmark is below. Write-up: `docs/step3_z_skeletons.tex`.
 
 - **Skeletons (`_zskeleton`, `z_skeletons`).** Per side of a block, the family of the layer's own exponentials on every quadrature node and mode:
   - observation side (local `z'`): `e^{iKZf·z'}`, `e^{iKZb(z'−d)}`;
@@ -235,6 +235,29 @@ Rank at τ = 1e-4 / 1e-6 / 1e-9, without the 80% rule; families from 6k kρ ∈ 
 | grouped biaxial box, 3 groups, shared skeleton | as above | 4.4e-7 |
 
 The other suites do not use `mod_GreenOperator.jl`.
+
+### Benchmark (2026-10-18, `Bench_GreenOperator.jl`, size L, δ = 1e-3, τ = 1e-6, 8 threads)
+
+Box source in layer 2, Δ = 1/32, 64×64 px, 256 φ, max-precision grid as before. The claddings are observed on their first 0.5λ (16 planes). Logs: `logs/bench_skeleton_{on,off}.{out,csv}`.
+
+| stack | block | skeleton R_s × R_o | MB on / off | build s on / off |
+|---|---|---|---|---|
+| iso vac/glass/vac (Ns = 16) | 2 → 1, 2 → 3 | 16 × 11 (glass side whole) | 396 / 576 | 31 / 52 |
+| biax vac/biax/vac (Ns = 16) | 2 → 1, 2 → 3 | 16 × 12 | 432 / 576 | 58 / 75 |
+| | 2 → 2 | both sides whole: `toeplitz_dense` | 648 / 648 | 88 / 85 |
+| thick vac/glass 2λ/vac (Ns = 64) | 2 → 1, 2 → 3 | **26 × 11** | **644 / 2304** | **70 / 241** |
+
+| stack | precompute s on / off | total MB on / off | apply ms on / off (all voxels) |
+|---|---|---|---|
+| iso | 92 / 135 | 936 / 1296 | 56 / 49 |
+| biax | 318 / 343 | 1512 / 1800 | 84 / 77 |
+| thick | **210 / 550** | **1647 / 4968** | **162 / 205** |
+
+- **Many source planes (thick, 64): 2.6× less precompute, 3.0× less memory, 21% faster apply.** The cross blocks are 3.6× smaller (26·11 / 64·16 = 0.28, as predicted) and 3.4× faster to build.
+- **At 16 planes (iso, biax): 1.2–1.5× on the cross blocks.** Only the cladding side compresses (11–12 of 16); the glass/biaxial side stays whole. The biaxial same-layer block is unchanged.
+- **Apply at 16 planes is 6–8 ms slower (+12%)**: the fold/interpolation GEMMs and their buffers cost more than the 16 × 11 pair loop saves over 16 × 16. Either keep a side whole unless it saves more (e.g. R ≤ 0.6·N instead of 0.8·N), or remove the allocations in the apply. Not done yet.
+- Skeleton construction: < 1 s (iso, thick), ≈ 10 s for biax (2 M (kρ, φ) mode solves per layer), inside the build column.
+- The grid and the cache are unchanged. Even with skeletons, the operator build still dominates the thick case's precompute (190 s of 210 s; grid 19 s, cache 1.5 s): the same-layer structured block (52 s) is now as costly as each cross block.
 
 ## Changes since 2026-09-24
 
