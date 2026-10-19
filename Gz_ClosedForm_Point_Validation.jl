@@ -24,6 +24,9 @@ using LinearAlgebra, StaticArrays, Printf
 #      gyrotropic medium (ϵxy = −ϵyx = iγ) is itself invariant, G(R r) = R G(r) Rᵀ
 #  [e] reciprocity between two internal layers, G_ij(r ← r') = G_ji(r' ← r),
 #      isotropic (1D cache) and biaxial (2D cache)
+#  [f] absolute normalization at ω ≠ 2π: a near-vacuum stack vs the analytic
+#      free-space dipole field, 1D and 2D caches (catches an overall ω/2π factor,
+#      which every other check here, all at ω = 2π, cannot see)
 # ─────────────────────────────────────────────────────────────────────────────
 
 ω = 2π
@@ -155,6 +158,28 @@ for (lbl, mat, use2d) in (("isotropic (1D)", m_gl, false), ("biaxial (2D)", m_bi
     end
 end
 passed["e"] = worst_e < 1e-10
+
+# ── [f] absolute normalization at ω ≠ 2π ──
+println("[f] near-vacuum stack vs analytic free-space dipole, several ω")
+function E_free(r, p, k, ε)       # ϵ0 = μ0 = c = 1, e^{-iωt}
+    R = norm(r); n = r / R
+    (cis(k * R) / (4π * ε)) * (k^2 * cross(cross(n, p), n) / R + (3n * dot(n, p) - p) * (1 / R^3 - im * k / R^2))
+end
+worst_f = 0.0
+φf, wφf = KxGrid.build_kphi_grid(48)
+for ωf in (2π, π, 1.0, 3.7)
+    εf = 1.0 + 1e-4im
+    st = [lay(IsotropicMaterial(εf), 3.0) for _ in 1:3]
+    zs, zo, x = 1.0, 1.7, 0.4
+    kx, wt, _ = point_kx_grid(st, ωf, 2; ρ_max=1.0, pz=0.05)
+    Gref = hcat([E_free([x, 0.0, zo - zs], ComplexF64.(1:3 .== q), ωf * sqrt(εf), εf) for q in 1:3]...)
+    G1 = closed_form_G(build_cavity_transfer_1d(st, ωf, 2, kx, wt), 2, zs, [zo], [x], [0.0])[1, 1, 1, :, :]
+    G2 = closed_form_G(build_cavity_transfer_2d(st, ωf, 2, kx, wt, φf, wφf; obs_layers=[2]), 2, zs, [zo], [x], [0.0])[1, 1, 1, :, :]
+    e1, e2 = norm(G1 - Gref) / norm(Gref), norm(G2 - Gref) / norm(Gref)
+    global worst_f = max(worst_f, e1, e2)
+    @printf("   ω = %.4f  1D %.2e  2D %.2e   (an ω/2π factor would give %.2e)\n", ωf, e1, e2, abs(ωf / 2π - 1))
+end
+passed["f"] = worst_f < 1e-10
 
 println()
 for k in sort(collect(keys(passed)))

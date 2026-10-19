@@ -259,6 +259,19 @@ Box source in layer 2, Δ = 1/32, 64×64 px, 256 φ, max-precision grid as befor
 - Skeleton construction: < 1 s (iso, thick), ≈ 10 s for biax (2 M (kρ, φ) mode solves per layer), inside the build column.
 - The grid and the cache are unchanged. Even with skeletons, the operator build still dominates the thick case's precompute (190 s of 210 s; grid 19 s, cache 1.5 s): the same-layer structured block (52 s) is now as costly as each cross block.
 
+## ω/2π normalization fix (2026-10-18, branch `z-skeletons`)
+
+Found by the theory review (handout `../G_z-z_Box-Source/HANDOUT_omega_over_2pi_normalization.md`): the code returned **(ω/2π) × the physical field**. The source vector carried an extra `−i` and the node weights an extra `iω/(2π)`. The error is invisible at ω = 2π (λ = 1), where every earlier run and validation was done. Confirmed before the fix: code/analytic free-space dipole = 0.5 at ω = π and 0.1592 at ω = 1, on every component, 1D and 2D.
+
+The code now matches the write-up term by term:
+
+- `Source_projection_Berreman_xyz`: `J_Et = kt·Jz/(ϵzz·ω)`, `J_Ht = R2s·Jt − R2s·ϵtz·Jz/ϵzz` (no `−i`).
+- 2D weight `kρ·wρ·wφ/(4π²)` (was `iω·kρ·wρ·wφ/(8π³)`), 1D weight `i·wt/(2π)` (was `−wt·ω/(4π²)`).
+- `ez_local_density`: `Ez_local = −p_z/(ϵzz·Δz)` (was `i·p_z/(ϵzz·Δz)`), from the same Et-jump relation.
+- The box suite's copies of `Js`, `Ez_local` and the bulk-solve `J_Ht` sign follow.
+
+Results at ω = 2π are unchanged (all suites pass with the same errors), so existing λ = 1 caches, figures and the Gila comparison stand. New check [f] in the point suite: near-vacuum stack vs the analytic free-space dipole at ω = 2π, π, 1, 3.7, 1D and 2D, worst 8e-12.
+
 ## Changes since 2026-09-24
 
 - **2026-09-28/30: Gila anisotropic study.** Written up in `RESULTS_gila_anisotropic_comparison.md`, with metrics in `diagnostics/results_summary.csv` (regenerate with `diagnostics/summarize_results.jl`). Conclusions:
@@ -301,6 +314,7 @@ Load everything with `include("ClosedForm.jl")`.
   - 2D rotation fill = full solve = 1D: 6e-15; NUFFT = exact sum: 1e-13.
   - 90° rotation covariance on biaxial/gyrotropic: 5e-14.
   - Reciprocity between layers, iso and biaxial: 2e-14.
+  - [f] Absolute normalization at ω = 2π, π, 1, 3.7: near-vacuum stack vs the analytic free-space dipole, 1D and 2D (added 2026-10-18 with the ω/2π fix).
 - **`Gz_ClosedForm_Box_Validation.jl`** (~10 min):
   - Lateral factor = footprint average of point fields.
   - Exterior `D` = exact slab average (1D, 2D biaxial/gyrotropic; thick box with |Im Q|·Δz/2 ≈ 600; box touching an interface): 6e-13 or better.
@@ -352,7 +366,7 @@ Load everything with `include("ClosedForm.jl")`.
 
 - **Point source in its own plane (ζ = 0).** The integral doesn't converge there. The code drops the direct term at exactly ζ = 0 (strict inequalities, as `Modal_amp_profile`). Near-source rows need the box.
 - **Deep-evanescent nodes (`Im Qf·d_src > 709`).** `_R_cavity` overflows, so `T^o` is non-finite and the node's reflected part is dropped (it is ~e^{−2κ·dist}). The direct term is kept, evaluated with the combined decaying exponent.
-- **Box.** Seen from outside its own z-slab, a box is exactly a point source with seeds `S(kt)·D·s`, where `D = sinc(Q·Δz/2)` per mode. It's evaluated in face-difference form, so `D` is never formed on its own. Inside the slab: face ramps + particular solution `−(iM)⁻¹Js/Δz` + `Ez_local = i·p_z/(ϵzz·Δz)` (per node, spectrally). The legacy code had no `Ez_local`.
+- **Box.** Seen from outside its own z-slab, a box is exactly a point source with seeds `S(kt)·D·s`, where `D = sinc(Q·Δz/2)` per mode. It's evaluated in face-difference form, so `D` is never formed on its own. Inside the slab: face ramps + particular solution `−(iM)⁻¹Js/Δz` + `Ez_local = −p_z/(ϵzz·Δz)` (per node, spectrally; was `i·p_z/(ϵzz·Δz)` before the ω/2π fix). The legacy code had no `Ez_local`.
 - **Last legacy comparison** (figures in `ShapeCompare_figs/`). The legacy point source and legacy box show a bright stripe along the whole source row; the new box is smooth. Legacy box build + first apply took 525–1170 s vs 80–130 s for the new box.
 
 ## Cleanup (2026-09-24)

@@ -146,11 +146,11 @@ The code evaluates \eqref{eq:master} on a $(k_\rho,\varphi)$ rule: nodes $\kn$ w
 $w^\rho_n w^\varphi_n$, adaptive in $k_\rho$ (\code{box\_k$\rho$\_grid}, or one $k_\rho$ rule per
 $\varphi$ group, \code{box\_k$\rho$\_grid\_grouped}). The node weight used in \code{closed\_form\_G} is
 \begin{equation}
-  W_n = \frac{\ii\,\omega\, k_{\rho,n}\, w^\rho_n\, w^\varphi_n}{8\pi^3}\; S(\kn),
+  W_n = \frac{k_{\rho,n}\, w^\rho_n\, w^\varphi_n}{4\pi^2}\; S(\kn),
   \label{eq:weights}
 \end{equation}
-that is, the polar Jacobian $k_\rho$ and the $1/(2\pi)^2$ of \eqref{eq:master}, times the
-code's prefactor $\ii\omega/(2\pi)$. Let $g_n(z',z)\in\mathbb{C}^{3\times3}$ be the
+that is, the polar Jacobian $k_\rho$ and the $1/(2\pi)^2$ of \eqref{eq:master}, with no other
+prefactor: the source vector carries the $-\ii\omega$ of $s_t$. Let $g_n(z',z)\in\mathbb{C}^{3\times3}$ be the
 separable part of $\widetilde G(\kn; z', z)$, i.e.\ the double sum in \eqref{eq:separation}.
 The discrete field is then
 \begin{equation}

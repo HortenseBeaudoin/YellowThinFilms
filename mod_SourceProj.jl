@@ -42,8 +42,8 @@ function Source_projection_Berreman_xyz(kt::AbstractVector, ω::Real, ϵ::Union{
     Jt_cols = (-1im * ω) .* _Jt_cols_unit
     Jz_row  = (-1im * ω) .* _Jz_row_unit
 
-    J_Et = (-1im * kts) * transpose(Jz_row) / (ϵzz * ω)
-    J_Ht = (1im * R2s * ϵtz) * transpose(Jz_row) / ϵzz - 1im * R2s * Jt_cols
+    J_Et = kts * transpose(Jz_row) / (ϵzz * ω)
+    J_Ht = R2s * Jt_cols - (R2s * ϵtz) * transpose(Jz_row) / ϵzz
     J_Berreman = vcat(J_Et, J_Ht)
 
     V = hcat(modes.Vf, modes.Vb)

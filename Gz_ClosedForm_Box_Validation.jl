@@ -132,7 +132,7 @@ function node_data(mat, kx, ky)
     ϵ = SMatrix{3,3,ComplexF64}(mat[i, j] for i in 1:3, j in 1:3)
     ϵtz = SVector(ϵ[1, 3], ϵ[2, 3]); ϵzz = ϵ[3, 3]; kts = SVector{2,ComplexF64}(kx, ky)
     Jt = (-im * ω) .* SMatrix{2,3,ComplexF64}(1, 0, 0, 1, 0, 0); Jz = (-im * ω) .* SVector{3,ComplexF64}(0, 0, 1)
-    Js = vcat((-im * kts) * transpose(Jz) / (ϵzz * ω), (im * ModeSolver.R2s * ϵtz) * transpose(Jz) / ϵzz - im * ModeSolver.R2s * Jt)
+    Js = vcat(kts * transpose(Jz) / (ϵzz * ω), ModeSolver.R2s * Jt - (ModeSolver.R2s * ϵtz) * transpose(Jz) / ϵzz)
     return (; md, sif, sib, M, ϵ, Js, Jt, Jz, kx, ky)
 end
 Ez_of(nd, Ψ) = [-(nd.ϵ[3, 1] * Ψ[1, q] + nd.ϵ[3, 2] * Ψ[2, q] + (nd.kx * Ψ[4, q] - nd.ky * Ψ[3, q]) / ω) / nd.ϵ[3, 3] for q in 1:3]
@@ -141,7 +141,7 @@ function Ψp_modal(nd; σb=-1)     # constant parts of the face ramps (Δz = 1)
     ab = SMatrix{2,3,ComplexF64}([σb * nd.sib[m, q] / (im * nd.md.Qb[m]) for m in 1:2, q in 1:3])
     return nd.md.Vf * af + nd.md.Vb * ab
 end
-Ezl(nd) = [0, 0, im / nd.ϵ[3, 3]]          # ez_local_density, Δz = 1
+Ezl(nd) = [0, 0, -1 / nd.ϵ[3, 3]]          # ez_local_density, Δz = 1
 kts_test = [(0.7, 0.2), (3.1, -1.4), (9.0, 4.0), (25.0, -7.0)]
 
 println("[I1] Ψ_p vs −(iM)⁻¹Js: σ_b = −1 (and σ_b = +1 for contrast)")
@@ -173,7 +173,7 @@ for (lbl, mat) in (("biaxial", m_bi), ("gyrotropic", m_gyr))
     e = 0.0
     for (kx, ky) in kts_test
         nd = node_data(mat, kx, ky); γ, η = conventions(nd)
-        s = -im                         # code's J_Ht: ΔHx = −i·Jy, ΔHy = +i·Jx
+        s = 1                           # code's J_Ht: ΔHx = Jy, ΔHy = −Jx
         k = SVector{3,ComplexF64}(kx, ky, 0)
         A = im * (k * transpose(k) - dot(k, k) * I) / (γ * ω) + im * ω * η * nd.ϵ
         Ebulk = A \ (s * vcat(nd.Jt, transpose(nd.Jz)))

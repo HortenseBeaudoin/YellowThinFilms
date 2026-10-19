@@ -414,7 +414,7 @@ Rules for implementing it:
   like `1/kρ²`. Isotropic TM check, done by hand: sum `= Ez_local·k0²ϵ/Q²`; modal part alone
   `→ −Ez_local` at large `kρ`.
 - **Prefactor and sign:** derive them from the **same relation that produced
-  `J_Et = −i·kt·Jz/(ϵzz·ω)`** in `Source_projection_Berreman_xyz`. `J_Et` *is* the
+  `J_Et = kt·Jz/(ϵzz·ω)`** in `Source_projection_Berreman_xyz`. `J_Et` *is* the
   Et-equation's `Ez`-coupling applied to `Ez_local`, so `Ez_local` is fixed by
   `_berreman_core`'s own convention (the code's `H` scaling is not assumed here).
   **Self-check:** with the right sign, `|Ez(Ψ_p)+Ez_local|` decays like `1/kρ²` at large

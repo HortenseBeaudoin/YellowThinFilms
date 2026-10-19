@@ -282,11 +282,11 @@ _unit_phases(Nk::Int) = ones(ComplexF64, Nk, 2)
 
 """
 Quadrature-weighted amplitudes + obs-layer basis, as one NamedTuple the pixel
-kernel reads. Weight `wk = −wt·ω/(4π²)`.
+kernel reads. Weight `wk = i·wt/(2π)`.
 """
 function _weighted_mcache(cache::CavityTransferCache1D, obs_layer::Int, Af::Array{ComplexF64,3}, Ab::Array{ComplexF64,3})
     Nk = length(cache.kx_nodes)
-    W  = [(-cache.wt_nodes[k] * cache.ω) / (4π^2) for k in 1:Nk]
+    W  = [(1im * cache.wt_nodes[k]) / (2π) for k in 1:Nk]
     wA(A, q) = [_finite_or_zero(W[k] * A[k, m, q]) for k in 1:Nk, m in 1:2]
     B = cache.basis[obs_layer]
     return merge(B, (d=cache.d_obs[obs_layer],
@@ -720,7 +720,7 @@ function closed_form_G(cache::CavityTransferCache2D, obs_layer::Int, zsrc_local:
     Nk, Np = size(cache.valid)
     kxn, kyn = _node_kxky(cache)
 
-    W = vec([(1im * kρ * wρ * wφ * cache.ω) / (8π^3)
+    W = vec([complex(kρ * wρ * wφ / (4π^2))
              for (kρ, wρ) in zip(cache.kρ_nodes, cache.kρ_weights), wφ in cache.phi_weights])
     if box_lateral !== nothing
         W .*= box_lateral_factor.(kxn, kyn, Float64(box_lateral[1]), Float64(box_lateral[2]))
@@ -849,16 +849,16 @@ The local (non-modal) `Ez` per unit canonical moment `x̂,ŷ,ẑ` inside a box's
 slab, §5.3. In the Berreman formalism `Ez` is algebraic; the ẑ row of ∇×H gives
 `Ez = (mode part) + Ez_local`, and the mode field basis (`_mode_field_core`)
 carries only the mode part. `Ez_local` follows from the same relation that
-produced `J_Et = −i·kt·Jz/(ϵzz·ω)` in `Source_projection_Berreman_xyz`: the
+produced `J_Et = kt·Jz/(ϵzz·ω)` in `Source_projection_Berreman_xyz`: the
 Berreman Et rows couple to Ez as `+i·kt·Ez` (the `B12` block of
 `_berreman_core`), so a source `Ez_local` produces exactly that Et jump iff
-`Ez_local = −Jz/(ϵzz·ω)` per unit area. For the box density `1/Δz` and the
-unit dipole current `Jz = −iω·p_z`: `Ez_local = i·p_z/(ϵzz·Δz)` -- only the
+`Ez_local = −i·Jz/(ϵzz·ω)` per unit area. For the box density `1/Δz` and the
+unit dipole current `Jz = −iω·p_z`: `Ez_local = −p_z/(ϵzz·Δz)` -- only the
 `p_z` column, no `Et`/`H` local terms. Uniform in `kt` (flat); only its sum
 with the modal particular part decays (like `1/kρ²`). Added per node, times
 the same quadrature weight and `S(kt)` as everything else, never in real space.
 """
 ez_local_density(cache::CavityTransferCache2D, Δz_box::Real) =
-    SVector{3,ComplexF64}(0, 0, im / (cache.ϵ_src[3, 3] * Δz_box))
+    SVector{3,ComplexF64}(0, 0, -1 / (cache.ϵ_src[3, 3] * Δz_box))
 
 end
