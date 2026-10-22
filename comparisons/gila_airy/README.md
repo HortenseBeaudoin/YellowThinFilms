@@ -81,4 +81,23 @@ The comparison is the top vacuum layer on the x/z plane through the source.
 Only the in-plane longitudinal component is off: Ex from p_x on this x slice, by 16–30% out to
 1λ. Gila is within 1–6% of the dipole on that row. N_phi_near must be 8192 here, because 2048
 aliases the source row beyond ~0.5λ. So compare off the source row until that item is done.
-Figure: `results/box_source_slice_stack.png`.
+
+**Bloch boundaries instead of the absorber** (`box_source_slice.jl bloch`, 2026-10-22). Gila runs
+with Bloch-periodic lateral boundaries (period = the grid, phase 0) and no absorber. The period is
+60 cells = 1.875λ: at 64 cells (2λ) the (0, ±2) order lies exactly on the light circle, a
+Rayleigh–Wood anomaly, and Gila stops. Off the source row, by lateral distance from the source:
+
+| distance | absorber (64 cells) | Bloch, phase 0 (60 cells) |
+|---|---|---|
+| 0–0.12λ | 2.6e-2 | 5.0e-2 |
+| 0.16–0.31λ | 1.1e-2 | 0.65 |
+| 0.34–0.50λ | 1.5e-2 | 0.79 |
+| 0.53–0.75λ | 3.3e-2 | 1.0 |
+| 0.78–1.00λ | 8.4e-2 (absorber band) | 0.94 |
+
+With Bloch boundaries Gila solves a periodic array of sources over an infinite stack. Its images
+are one period away and the χ = 3 film guides their light back, so beyond ~0.15λ the field is a
+different one (fringes with nodes near x ≈ ±0.6λ). A like-for-like comparison would need our field
+summed over the same reciprocal lattice, k = k_Bloch + 2π(m, n)/L. `CavityTransferCache2D` only
+takes a (kρ, φ) product grid, so that needs a node-list variant of the cache.
+Figures: `results/box_source_slice_stack_{absorber,bloch}.png`.

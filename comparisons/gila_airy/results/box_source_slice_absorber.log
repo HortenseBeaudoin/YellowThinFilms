@@ -1,12 +1,12 @@
 ┌ Info: own: box grid
 │   n_kρ = 6285
 │   n_φ = 256
-└   elapsed = 11.889872074127197
+└   elapsed = 10.344499111175537
 ┌ Info: own: field
-└   elapsed = 154.4372410774231
+└   elapsed = 149.31876397132874
 ┌ Info: Gila: solved
 │   relative_residual = 9.18115762967473e-7
-└   elapsed = 35.579150915145874
+└   elapsed = 38.26512813568115
 
 moment (z-up) p = [-0.268-0.535i, 0.372-0.530i, 0.085-0.464i]
 relative L2, own vs Gila, top layer:
@@ -15,4 +15,10 @@ relative L2, own vs Gila, top layer:
     near source (±6 cells)          2.581e-02
     away from source, interior      1.782e-02
   source row (source voxel excluded) 3.043e-02
-figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/box_source_slice_stack.png
+  off the source row, by lateral distance from the source:
+    0.00–0.12λ  2.582e-02
+    0.16–0.31λ  1.085e-02
+    0.34–0.50λ  1.495e-02
+    0.53–0.75λ  3.280e-02
+    0.78–1.00λ  8.434e-02
+figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/box_source_slice_stack_absorber.png

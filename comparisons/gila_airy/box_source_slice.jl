@@ -1,8 +1,11 @@
 # box_source_slice.jl -- one box source above the three-film stack of `airy_comparison.jl`,
 # field in the top vacuum layer on the x/z plane through the source: own closed-form solver
-# (src_layer = obs_layer = 1) vs Gila (finite grid, lateral absorber in the films).
+# (src_layer = obs_layer = 1) vs Gila, with one of two lateral boundaries:
+#   absorber (default): finite grid, absorbing ramp in the films near the lateral edges;
+#   bloch: Bloch-periodic grid (period = the grid, phase BLOCH_PHASE), no absorber. Gila then
+#          solves a periodic array of sources, while the own field is the single source's.
 #
-#   julia -t auto --project=comparisons/gila_airy comparisons/gila_airy/box_source_slice.jl
+#   julia -t auto --project=comparisons/gila_airy comparisons/gila_airy/box_source_slice.jl [absorber|bloch]
 #
 # Physical frame: z up, the stack's top face at z = 0, the source above it at x = y = s/2. Gila uses this frame
 # directly. The own solver's z runs top → bottom (layer 1 = top vacuum, local depth from its top),
@@ -16,12 +19,18 @@ include(joinpath(ROOT, "ClosedForm.jl"))
 
 const ω = 2π
 const s = 1//32                       # voxel = box size, both solvers
-const N_LAT = 64                      # lateral cells (Gila wants even counts)
-const MID = N_LAT ÷ 2 + 1             # source column: the cell centred at x = y = s/2
 const H_TOP = 1//2                    # rendered top vacuum layer
 const SRC_ROW = 8                     # source cell = 8th row above the stack's top face
 const BOTTOM_CELLS = 4                # vacuum kept under the stack on Gila's grid
+const GILA_BC = isempty(ARGS) ? "absorber" : ARGS[1]
+GILA_BC in ("absorber", "bloch") || error("boundary must be absorber or bloch, got $GILA_BC")
 const ABSORBER = (width_wl = 0.25, rel_imag = 1.0, power = 2)   # Gila films only, as in RESULTS_gila_anisotropic_comparison.md
+const BLOCH_PHASE = (0.0, 0.0)        # per period along x, y (Gila: p(r + L) = e^{-iθ} p(r))
+# Lateral cells (Gila wants even counts). The Bloch period is the grid, and at phase 0 a 2λ period
+# (64 cells) puts the (0, ±2) diffraction order exactly on the light circle (a Rayleigh–Wood
+# anomaly, which Gila refuses): 60 cells = 1.875λ has no order there.
+const N_LAT = GILA_BC == "bloch" ? 60 : 64
+const MID = N_LAT ÷ 2 + 1             # source column: the cell centred at x = y = s/2
 const OWN_OPTS = (rtol = 1e-3, kρ_cap = 3000.0, N_phi = 256, maxevals = 50_000, lateral = :nufft,
                   near_rows = 6, N_phi_near = 8192, phi_chunk = 256)    # old pipeline's defaults, but N_phi_near
                                                                          # 2048 aliases the source row beyond ~0.5λ
@@ -93,12 +102,14 @@ function gila_slice()
         j === nothing && return 0.0 + 0im
         χ = ComplexF64(FILMS[j][1])
         d = edge - max(abs(x), abs(y))
-        d < ABSORBER.width_wl || return χ
+        (GILA_BC == "absorber" && d < ABSORBER.width_wl) || return χ
         return χ + im * ABSORBER.rel_imag * abs(real(1 + χ)) * ((ABSORBER.width_wl - d) / ABSORBER.width_wl)^ABSORBER.power
     end
 
     t0 = time()
-    G₀ = VacuumGreenOperator{Float64}(volume)
+    G₀ = GILA_BC == "bloch" ?
+        VacuumGreenOperator{Float64}(volume; blc = (ax = (1, 2), P = (N_LAT, N_LAT), θ = BLOCH_PHASE)) :
+        VacuumGreenOperator{Float64}(volume)
     W = ScatteringOperator(G₀, χ_of; slv = GCRODRSolver(nothing, 5000, nothing, 1e-6))
     X = sus(W)
     zs = Float64.(volume.grd[3])
@@ -124,7 +135,7 @@ intensity(S) = dropdims(sum(abs2, S; dims = 3); dims = 3)
 
 function report(own, gila)
     xs = ((1:N_LAT) .- (N_LAT + 1) / 2) .* Float64(s)
-    interior = abs.(xs) .< N_LAT * Float64(s) / 2 - ABSORBER.width_wl
+    interior = GILA_BC == "absorber" ? abs.(xs) .< N_LAT * Float64(s) / 2 - ABSORBER.width_wl : trues(N_LAT)
     off_row = trues(N_LAT, n_top); off_row[:, SRC_ROW] .= false
     src_row = .!off_row; src_row[MID, SRC_ROW] = false
     near = falses(N_LAT, n_top)
@@ -141,6 +152,11 @@ function report(own, gila)
     # The box's own z-slab: the in-plane longitudinal component converges only algebraically
     # in kρ (no quasi-static subtraction yet), so this row is ~20–30% off even far out.
     @printf("  source row (source voxel excluded) %.3e\n", relL2(src_row))
+    println("  off the source row, by lateral distance from the source:")
+    for (lo, hi) in ((0, 4), (5, 10), (11, 16), (17, 24), (25, 32))
+        cols = falses(N_LAT, n_top); cols[[i for i in 1:N_LAT if lo <= abs(i - MID) <= hi], :] .= true
+        @printf("    %4.2f–%4.2fλ  %.3e\n", lo * Float64(s), hi * Float64(s), relL2(off_row .& cols))
+    end
 end
 
 function draw!(plt, xs, zs, M; clims, title, cmap = :inferno, cbtitle = "log₁₀ |E|²")
@@ -155,7 +171,7 @@ function draw!(plt, xs, zs, M; clims, title, cmap = :inferno, cbtitle = "log₁�
     plot!(plt, [xl...], [0.0, 0.0]; color = :white, lw = 1, label = "")
     scatter!(plt, [xs[MID]], [z_src]; marker = :square, ms = 3, mc = :cyan, msw = 0, label = "")
     a = N_LAT * Float64(s) / 2 - ABSORBER.width_wl
-    vline!(plt, [-a, a]; ls = :dash, color = :gray, label = "")
+    GILA_BC == "absorber" && vline!(plt, [-a, a]; ls = :dash, color = :gray, label = "")
     return plt
 end
 
@@ -168,11 +184,11 @@ function figure(own, gila)
     common = (xlabel = "x (λ)", ylabel = "z (λ)", aspect_ratio = :equal, xticks = -1:0.5:1,
               xlims = extrema(xs), ylims = (-T_STACK - 0.02, Float64(H_TOP)))
     p1 = draw!(plot(; common...), xs, zs, Io; clims = (lo, hi), title = "own (closed form)")
-    p2 = draw!(plot(; common...), xs, zs, Ig; clims = (lo, hi), title = "Gila")
+    p2 = draw!(plot(; common...), xs, zs, Ig; clims = (lo, hi), title = "Gila ($GILA_BC)")
     p3 = draw!(plot(; common...), xs, zs, err; clims = (-3, 0), title = "|E_own − E_Gila| / |E_Gila|",
                cmap = :viridis, cbtitle = "log₁₀")
     plt = plot(p1, p2, p3; layout = (1, 3), size = (1500, 420), left_margin = 4Plots.mm, bottom_margin = 6Plots.mm)
-    path = joinpath(mkpath(joinpath(@__DIR__, "results")), "box_source_slice_stack.png")
+    path = joinpath(mkpath(joinpath(@__DIR__, "results")), "box_source_slice_stack_$GILA_BC.png")
     savefig(plt, path)
     println("figure: ", path)
 end
