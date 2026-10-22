@@ -1,0 +1,4 @@
+[deps]
+GilaElectromagnetics = "d021e48d-d5bb-41e2-b1a9-c560019218de"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
