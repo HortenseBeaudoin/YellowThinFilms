@@ -1,0 +1,11 @@
+┌ Info: Gila: solved
+└   elapsed = 3.554052375
+
+stack base, incidence oblique: |k_t| = 0.58310 k0 along φ = 31.0° (θ = 35.7°), ‖r_sp‖ = 0.39 (largest s/p reflection at the face)
+e_inc (z-up) = [-0.137+0.731i, -0.437-0.269i, -0.246+0.350i]
+top layer, own vs Gila, relative L2:  total 1.936e-03   scattered 6.538e-03
+  scattered Ex: 7.059e-03
+  scattered Ey: 5.958e-03
+  scattered Ez: 7.111e-03
+|E_s| / |E_inc| at the stack face (own): 0.319
+figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/plane_wave_base_oblique.png

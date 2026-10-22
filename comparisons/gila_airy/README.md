@@ -33,28 +33,63 @@ of Gila (1.1.0). The main Manifest still pins PaulVirally 1.0.3.
 
 Raw values: `results/<case>.tsv`. Figures: `results/<case>.png`.
 
-## Plane-wave field map above the stack (`plane_wave_slice.jl`)
+## Plane-wave field maps above the stack (`plane_wave_slice.jl`)
 
-A plane wave with a fixed k_t = 2π·(0.5, 0.3) (θ = 35.7°, φ = 31°) and a random complex s/p
-polarization falls from above on the three-film stack. The script compares the total field in
-the top vacuum layer (0 < z < λ/2) on an x/z slice. In the figure z is vertical and the slice
-sits above the drawn stack.
+```bash
+julia -t auto --project=comparisons/gila_airy comparisons/gila_airy/plane_wave_slice.jl <stack> <incidence> [cells per λ]
+```
+
+A plane wave with a fixed k_t and a random complex s/p polarization falls from above on a
+three-film stack. The script compares the field in the top vacuum layer (0 < z < λ/2) on an x/z
+slice. In the figures z is vertical and the slice sits above the drawn stack.
 
 - **own:** a `ModalSeed` at the top edge of layer 1 (src = obs = layer 1) and
   `Modal_amp_profile` give the amplitudes at each depth, and `_mode_field_core` gives (Ex, Ey, Ez).
-- **Gila:** the tutorial's Bloch 2×2 column at λ/64 in Float64, with Bloch phases
+- **Gila:** the tutorial's Bloch 2×2 column (λ/64 by default) in Float64, with Bloch phases
   (−kx·2Δ, −ky·2Δ). It is extended along x with the same phase.
 
 Both solve the same laterally infinite, periodic problem. Gila's tutorial setup with a point
 source would instead give a periodic array of sources, which is not our single-source field.
 
-| | relative L2 | max \|ΔE\| / max \|E\| |
-|---|---|---|
-| E (all components) | 1.9e-3 | 1.7e-3 |
-| Ex / Ey / Ez | 1.8e-3 / 2.3e-3 / 1.7e-3 | |
+The main metric is the **scattered** field E − E_inc, the stack's response. For evanescent
+incidence the incident wave grows with z and dominates the total field.
 
-This is the same level as the Gila-vs-Airy gap on the reflectance curves, so it is Gila's
-discretization again. Figure: `results/plane_wave_slice_stack.png`.
+Stacks, films listed bottom → top as (εt, εz, d):
+
+- `base`: (2.25, 1/4λ), (4.0, 3/16λ), (2.0+0.1i, 1/8λ), isotropic, the stack of `airy_comparison.jl`.
+- `hyperbolic`: the same, with the middle film uniaxial, εt = 4.0+0.1i, εz = −3.2+0.3i.
+
+Incidences, with k_t along φ = 31°:
+
+- `oblique`: |k_t| = 0.583 k0, θ = 35.7°.
+- `normal`: k_t = 0.
+- `resonance`: the strongest reflection pole between k0 and 3k0, i.e. the largest singular value
+  of the physical s/p reflection matrix at the stack face. For `base` that is 1.0624 k0, with
+  |r| = 21; there is a second pole at 1.66 k0, with |r| = 12.
+- `evanescent`: |k_t| = 2.5 k0, which propagates inside the hyperbolic layer.
+
+The reflection matrix matches the isotropic TMM of `airy_comparison.jl` exactly on `base`
+(|r_ss|², |r_pp|² at 0°, 35.7° and 60°; cross terms 1e-16).
+
+| stack | incidence | ‖r_sp‖ | total, own vs Gila | scattered, own vs Gila |
+|---|---|---|---|---|
+| base | oblique | 0.39 | 1.9e-3 | 6.5e-3 |
+| base | normal | 0.26 | 2.1e-3 | 8.5e-3 |
+| base | resonance (λ/64) | 21 | 1.9e-1 | 2.0e-1 |
+| base | resonance (λ/128) | 21 | 4.9e-2 | 4.9e-2 |
+| base | resonance (λ/256) | 21 | 1.2e-2 | 1.2e-2 |
+| hyperbolic | oblique | 0.37 | 1.9e-3 | 7.3e-3 |
+| hyperbolic | normal | 0.24 | 2.0e-3 | 8.4e-3 |
+| hyperbolic | evanescent | 0.42 | 3.5e-6 | 1.5e-2 |
+
+- **Away from a pole**, every case agrees to about 1%. That includes normal incidence and the
+  hyperbolic layer, for propagating and for high-k_t evanescent waves.
+- **At the resonance**, the gap falls by 4× per halving of Gila's cell, 0.20 → 0.049 → 0.012.
+  So Gila converges as Δ² onto our field. A sharp pole amplifies the small shift that
+  discretization causes, and our solver has no such error.
+- Each Gila solve takes about 3 s.
+
+Figures and logs: `results/plane_wave_<stack>_<incidence>[_<cells per λ>].{png,log}`.
 
 ## Box source above the stack, Gila with a lateral absorber (`box_source_slice.jl`)
 

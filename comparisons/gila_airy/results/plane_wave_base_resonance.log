@@ -1,0 +1,11 @@
+┌ Info: Gila: solved
+└   elapsed = 3.346330709
+
+stack base, incidence resonance: |k_t| = 1.06242 k0 along φ = 31.0° (evanescent), ‖r_sp‖ = 21 (largest s/p reflection at the face)
+e_inc (z-up) = [-0.008+0.197i, -0.360-0.590i, -0.400+0.569i]
+top layer, own vs Gila, relative L2:  total 1.925e-01   scattered 1.975e-01
+  scattered Ex: 2.116e-01
+  scattered Ey: 1.583e-01
+  scattered Ez: 1.984e-01
+|E_s| / |E_inc| at the stack face (own): 14.9
+figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/plane_wave_base_resonance.png

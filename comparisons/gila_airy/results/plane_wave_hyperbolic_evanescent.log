@@ -1,0 +1,11 @@
+┌ Info: Gila: solved
+└   elapsed = 3.439710291
+
+stack hyperbolic, incidence evanescent: |k_t| = 2.50000 k0 along φ = 31.0° (evanescent), ‖r_sp‖ = 0.417 (largest s/p reflection at the face)
+e_inc (z-up) = [-0.191+0.068i, -0.470-0.667i, -0.311+0.443i]
+top layer, own vs Gila, relative L2:  total 3.463e-06   scattered 1.521e-02
+  scattered Ex: 1.517e-02
+  scattered Ey: 1.580e-02
+  scattered Ez: 1.516e-02
+|E_s| / |E_inc| at the stack face (own): 0.247
+figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/plane_wave_hyperbolic_evanescent.png

@@ -1,0 +1,11 @@
+┌ Info: Gila: solved
+└   elapsed = 3.440109208
+
+stack hyperbolic, incidence normal: |k_t| = 0.00000 k0 along φ = 31.0° (θ = 0.0°), ‖r_sp‖ = 0.243 (largest s/p reflection at the face)
+e_inc (z-up) = [-0.422+0.601i, -0.304-0.607i, 0.000+0.000i]
+top layer, own vs Gila, relative L2:  total 2.000e-03   scattered 8.415e-03
+  scattered Ex: 8.415e-03
+  scattered Ey: 8.415e-03
+  scattered Ez: zero in both
+|E_s| / |E_inc| at the stack face (own): 0.243
+figure: /Users/hortenseb/Documents/01-POLYTECHNIQUE/03-RESEARCH_WORK/03-CODING_WORK/YellowThinFilms/comparisons/gila_airy/results/plane_wave_hyperbolic_normal.png
