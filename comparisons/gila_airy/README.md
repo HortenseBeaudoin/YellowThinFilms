@@ -55,3 +55,30 @@ source would instead give a periodic array of sources, which is not our single-s
 
 This is the same level as the Gila-vs-Airy gap on the reflectance curves, so it is Gila's
 discretization again. Figure: `results/plane_wave_slice_stack.png`.
+
+## Box source above the stack, Gila with a lateral absorber (`box_source_slice.jl`)
+
+One λ/32 box source with a random complex moment sits 0.234λ above the three-film stack.
+Gila uses a finite 64×64 grid in Float64, with the absorber of `RESULTS_gila_anisotropic_comparison.md`
+(0.25λ, rel_imag 1.0, power 2) in the films. Our code uses the closed-form box, src = obs = layer 1.
+The comparison is the top vacuum layer on the x/z plane through the source.
+
+| region | relative L2, own vs Gila |
+|---|---|
+| off the source row | 2.6e-2 |
+| off the source row, away from the source (interior) | 1.8e-2 |
+| source row (source voxel excluded) | 3.0e-2, but 20–30% beyond 0.25λ |
+
+**The "0.35 factor" (investigated 2026-10-22).** It was not a normalization difference:
+
+- An off-by-one in the first version of this script mirrored our rows about the middle of the
+  layer, which put our source one row off Gila's.
+- The free-space G₀ of the fork and of the old PaulVirally Gila agree to 1e-8 on a voxel source.
+  Against an analytic point dipole, our field off the source row fits with a factor of 0.998
+  (residual 9e-5), and Gila's with 0.989∠0.5°.
+
+**The source row.** Our field there is the open item of STATUS (no quasi-static subtraction).
+Only the in-plane longitudinal component is off: Ex from p_x on this x slice, by 16–30% out to
+1λ. Gila is within 1–6% of the dipole on that row. N_phi_near must be 8192 here, because 2048
+aliases the source row beyond ~0.5λ. So compare off the source row until that item is done.
+Figure: `results/box_source_slice_stack.png`.
