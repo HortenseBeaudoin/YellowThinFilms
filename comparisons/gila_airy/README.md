@@ -32,3 +32,26 @@ of Gila (1.1.0). The main Manifest still pins PaulVirally 1.0.3.
   turns the lossy layer into gain, and it was off by 0.11 against both solvers.
 
 Raw values: `results/<case>.tsv`. Figures: `results/<case>.png`.
+
+## Plane-wave field map above the stack (`plane_wave_slice.jl`)
+
+A plane wave with a fixed k_t = 2π·(0.5, 0.3) (θ = 35.7°, φ = 31°) and a random complex s/p
+polarization falls from above on the three-film stack. The script compares the total field in
+the top vacuum layer (0 < z < λ/2) on an x/z slice. In the figure z is vertical and the slice
+sits above the drawn stack.
+
+- **own:** a `ModalSeed` at the top edge of layer 1 (src = obs = layer 1) and
+  `Modal_amp_profile` give the amplitudes at each depth, and `_mode_field_core` gives (Ex, Ey, Ez).
+- **Gila:** the tutorial's Bloch 2×2 column at λ/64 in Float64, with Bloch phases
+  (−kx·2Δ, −ky·2Δ). It is extended along x with the same phase.
+
+Both solve the same laterally infinite, periodic problem. Gila's tutorial setup with a point
+source would instead give a periodic array of sources, which is not our single-source field.
+
+| | relative L2 | max \|ΔE\| / max \|E\| |
+|---|---|---|
+| E (all components) | 1.9e-3 | 1.7e-3 |
+| Ex / Ey / Ez | 1.8e-3 / 2.3e-3 / 1.7e-3 | |
+
+This is the same level as the Gila-vs-Airy gap on the reflectance curves, so it is Gila's
+discretization again. Figure: `results/plane_wave_slice_stack.png`.
