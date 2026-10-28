@@ -14,16 +14,18 @@ using QuadGK: quadgk_segbuf, cachedrule
 #  Helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Finds branch point to build grid around singularities, or avoid them
+# Finds branch point to build grid around singularities, or avoid them.
+# The real-axis feature of a lossy layer sits at ω·Re(√ε), not ω·√(Re ε); layers
+# with Re ε ≤ 0 (metals, hyperbolic axes) have no cutoff on the real axis.
+# Diagonal entries only, φ-independent: see the convergence notes for the
+# in-plane-anisotropic and off-diagonal (gyrotropic) cases.
 function branch_points(stack::Vector{<:AbstractLayer}, ω::Float64)
     ks = Float64[]
     for lay in stack
-        εxx = real(lay.ϵ[1,1])
-        εyy = real(lay.ϵ[2,2])
-        εzz = real(lay.ϵ[3,3])
-        εxx > 0 && push!(ks, ω * sqrt(εxx))
-        εyy > 0 && push!(ks, ω * sqrt(εyy))
-        εzz > 0 && push!(ks, ω * sqrt(εzz))
+        for i in 1:3
+            ε = ComplexF64(lay.ϵ[i,i])
+            real(ε) > 0 && push!(ks, ω * real(sqrt(ε)))
+        end
     end
     return sort(unique(ks))
 end
@@ -293,9 +295,12 @@ guided-mode pole, a branch-point cusp). Exposed so a fixed-Δkx uniform grid
 can be judged adequate against it (`Δkx` vs. this width) without re-running
 the adaptive probe a second time just to ask "how fine did you need to go".
 Finite bands only (the merged `fin_segs`, not the evanescent tail) --
-`kbreaks` already brackets every branch point/pole location inside the
-finite-band domain, so that is where a narrow feature would show up as a
-small accepted panel.
+`kbreaks` spans every real-axis branch point (`branch_points`' ε-based
+cutoffs), and guided-mode poles sit below the largest of them, so that is
+where a narrow feature would show up as a small accepted panel. Note that
+`kbreaks` does NOT locate poles: nothing here finds them, the adaptive
+refinement only resolves them by brute force once loss moves them off the
+real axis (a lossless stack puts them on the path and the finite bands stall).
 
 `info` reports `(n_panels_fin, n_nodes, per_probe_fin, per_probe_tail,
 any_tail_stalled, min_panel_width)` (`warn_stall=false` silences the per-probe
