@@ -272,6 +272,15 @@ The code now matches the write-up term by term:
 
 Results at ω = 2π are unchanged (all suites pass with the same errors), so existing λ = 1 caches, figures and the Gila comparison stand. New check [f] in the point suite: near-vacuum stack vs the analytic free-space dipole at ω = 2π, π, 1, 3.7, 1D and 2D, worst 8e-12.
 
+## Branch points and tail cutoffs (2026-10-29, branch `gila-airy-comparison`)
+
+- `branch_points` puts the breaks at `ω·Re(√ε)` (was `ω·√(Re ε)`; differs only at high loss), diagonal entries only, φ-independent. Breakpoints only split panels, so this changes cost, not results. The `adaptive_kx_grid` docstring no longer claims `kbreaks` locates poles: nothing does, refinement resolves them once loss moves them off the axis.
+- Tail cutoffs now follow one rule (`KxGrid.decay_cutoff`, `KxGrid.tail_bound`): `K = min(max(K_geom, 80·kmax), kρ_cap)`. The ceiling `kρ_cap` (default 2000, a cost ceiling with no physical derivation) wins over the floor, so explicit small caps stay honoured.
+  - Box: per probe `K_geom = min(target_decay/h, K_box)` (only `K_box` inside the slab, h = 0); the shared grid takes the largest. Unchanged with interior probes (`kρ_cap` truncates; Newell item below). Exterior-only grids go from a fixed 80·kmax to `max(80·kmax, 25/h_min)`.
+  - Point: `K_geom = target_decay/(pz/2)`; `pz` is the resolution knob. Keyword `kx_ratio_max` replaced by `kρ_cap`, `target_decay`; `info.tail_bound` reports the bound.
+  - `target_decay = 25` ≈ log(1/rtol) plus a margin for near-field prefactors.
+- Validation vs the unchanged commit: Point, Box, Operator, Assembly, Grid all PASS with the same errors (≤ 1e-13 changes). The box suite's [P] source-plane profile (vacuum, pz = 0.05) improves: the point source's max |Ez|² inside the slab goes 4618 → 35.6 (box 27.9), the old 80·kmax ≈ 503 cap having left an undecayed tail (e^{−3}) at rows 0.006 from the source.
+
 ## Changes since 2026-09-24
 
 - **2026-09-28/30: Gila anisotropic study.** Written up in `RESULTS_gila_anisotropic_comparison.md`, with metrics in `diagnostics/results_summary.csv` (regenerate with `diagnostics/summarize_results.jl`). Conclusions:

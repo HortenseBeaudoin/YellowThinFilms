@@ -1,7 +1,7 @@
 module KxGrid
 
 export branch_points, build_kphi_grid
-export thinnest_finite_layer, evanescent_umax
+export thinnest_finite_layer, evanescent_umax, decay_cutoff, tail_bound
 export adaptive_kx_grid
 
 import ..ModeSolver: AbstractLayer
@@ -29,6 +29,31 @@ function branch_points(stack::Vector{<:AbstractLayer}, ω::Float64)
     end
     return sort(unique(ks))
 end
+
+
+"""
+    decay_cutoff(h; target_decay=25.0) -> K
+
+kρ at which an `e^{−kρ·h}` tail has decayed by `target_decay` e-folds:
+`K = target_decay / h`, with `h` the smallest source-to-observation distance the
+grid must resolve. `target_decay` is `log(1/rtol)` plus a margin for the
+polynomial prefactors of the near field (`kρⁿ·e^{−kρh}`); e^{−25} ≈ 1.4e-11.
+"""
+decay_cutoff(h::Real; target_decay::Real=25.0) = Float64(target_decay) / Float64(h)
+
+
+"""
+    tail_bound(K, kmax; kρ_cap=Inf, kx_ratio_min=80.0) -> Float64
+
+Upper kρ bound of the tail from a geometry-driven cutoff `K` (`decay_cutoff`,
+`box_tail_cutoff`): at least `kx_ratio_min·kmax` (keeps the cut well past the
+propagating band; 80·kmax is the fixed tail every grid used before the cutoff was
+tied to the geometry), at most `kρ_cap` (cost ceiling). The ceiling wins over the
+floor, so a caller's explicit `kρ_cap` (quick runs, rank studies below the pixel
+band) is always honoured.
+"""
+tail_bound(K::Real, kmax::Real; kρ_cap::Real=Inf, kx_ratio_min::Real=80.0) =
+    min(max(Float64(K), Float64(kx_ratio_min) * kmax), Float64(kρ_cap))
 
 
 """
@@ -286,6 +311,11 @@ against analytic/semi-analytical ground truth in Part 2) is comfortably past
 tail there costs no real accuracy -- content beyond it is already many
 orders of magnitude below any reasonable `rtol` for the physical integral,
 while removing it is what keeps the multi-source formula numerically sane.
+(That cancellation is the `Modal_amp_profile` path's; the closed-form path forms
+only decaying exponentials, clamped in `_phase`.) The closed-form grid builders
+(`mod_ClosedFormGrid.jl`) no longer pass a fixed 80: they set the cap from the
+geometry with `tail_bound` (`decay_cutoff` for an `e^{−kρh}` tail,
+`box_tail_cutoff` inside a box's slab), floored at 80·kmax and capped by `kρ_cap`.
 
 `min_panel_width` (Part C, uniform-extended-source handoff): the FINEST
 panel QuadGK settled on among the finite bands, off the MERGED

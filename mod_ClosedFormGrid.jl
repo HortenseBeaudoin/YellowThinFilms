@@ -40,11 +40,19 @@ distance to the box's NEAR face (not to its centre), so `Leff = h` (plus the
 interface distance for reflected terms) is what the fallback evanescent band
 uses. Inside the slab there is no exponential factor: the integrand decays
 only algebraically, with the a-priori envelope `tail(K) ~ log(KΔ)/(KΔ)`,
-`Δ = min(Δx_box, Δy_box, Δz_box)`. When such a probe is present, the upper kρ
-bound is set from the tolerance, `log(KΔ)/(KΔ) ≤ rtol`, capped by `kρ_cap`
-(instead of the point grid's fixed `kx_ratio_max = 80`). The φ grid must resolve
-`kρ·ρ` up to that bound for the off-centre probes -- `N_phi` is the caller's.
-The optional quasi-static (Newell) subtraction of §4.2 is not implemented.
+`Δ = min(Δx_box, Δy_box, Δz_box)`. Each probe's cutoff is whichever cuts first,
+`min(target_decay/h, K_box)` with `K_box` from `log(KΔ)/(KΔ) ≤ rtol`
+(`box_tail_cutoff`); inside the slab (`h = 0`) only `K_box` applies. The probes
+share one grid, so the upper kρ bound is the largest of these, at least 80·kmax
+and at most `kρ_cap` (`KxGrid.tail_bound`). In practice `K_box ≫ kρ_cap` as soon
+as an interior probe is present, so `kρ_cap` is what truncates the self-slab tail:
+the field inside the source slab is converged to that bound, not absolutely. The
+φ grid must resolve `kρ·ρ` up to that bound for the off-centre probes -- `N_phi`
+is the caller's. The optional quasi-static (Newell) subtraction of §4.2, which
+would remove that truncation, is not implemented.
+
+The point grid uses the same rule with `h = pz/2` and no box term
+(`point_kx_grid`).
 
 Losses. The kρ path is the real axis (breaks at the light lines only, no
 contour deformation or pole extraction), so a lossless stack puts its
@@ -59,7 +67,7 @@ module ClosedFormGrid
 export point_kx_grid, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
 
 import ..ModeSolver: AbstractLayer, _is_azimuthally_symmetric_stack
-import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer
+import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer, decay_cutoff, tail_bound
 import ..CavityTransfer: build_cavity_transfer_1d, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G, closed_form_pixel
 using Base.Threads
@@ -90,7 +98,7 @@ _lossless(m) = all(iszero(imag(m[i, j])) for i in 1:3, j in 1:3)
 
 """
     box_kρ_grid(stack, ω, source_layer; box, zbar=nothing, N_phi=64, phi=nothing, lateral_dir=0.0, ρ_far=0.0,
-                rtol=1e-4, atol=0.0, kr_order=7, maxevals=10_000, kρ_cap=2000.0,
+                rtol=1e-4, atol=0.0, kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0,
                 include_interior=true, on_stall=:error)
         -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
 
@@ -104,7 +112,8 @@ fastest at `φ = θ`, so a φ group needs its probes along its own φ (on the fu
 φ grid the φ = 0 nodes see the x̂ probes at full rate).
 `include_interior=false`
 drops the inside-the-slab probes (then every probe decays exponentially and the
-point-grid `kx_ratio_max = 80` tail cap is used). `info` merges
+tail bound is `target_decay/h_min`, see the module notes). `kρ_cap` (default 2000) is a
+cost ceiling, not derived from the physics; it wins over the 80·kmax floor. `info` merges
 `adaptive_kx_grid`'s info with the probe list, `Leff`, the tail bound and the
 number of distinct kρ solves.
 
@@ -118,7 +127,8 @@ under-resolved probe): `:error` (default) throws, listing the stalled probes;
 function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                      box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, phi=nothing, lateral_dir::Real=0.0, ρ_far::Real=0.0,
                      rtol::Real=1e-4, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
-                     kρ_cap::Real=2000.0, include_interior::Bool=true, on_stall::Symbol=:error)
+                     kρ_cap::Real=2000.0, target_decay::Real=25.0, include_interior::Bool=true,
+                     on_stall::Symbol=:error)
     on_stall in (:error, :warn) || error("box_kρ_grid: on_stall=$on_stall must be :error or :warn")
     N = length(stack)
     (1 <= source_layer < N) || error("box_kρ_grid: source_layer=$source_layer must be in 1:$(N-1)")
@@ -186,14 +196,17 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
     kbreaks = branch_points(stack, ωf)
     kmax = kbreaks[end]
     hs = [p[5] for p in probes]
-    has_interior = any(==(0.0), hs)
     Leff = max(minimum(h for h in hs if h > 0; init=Δz / 2), 1e-6 * thinnest_finite_layer(stack))
-    Kcut = has_interior ? min(box_tail_cutoff(min(Δx, Δy, Δz), rtol), Float64(kρ_cap)) : 80.0 * kmax
+    # per probe, whichever cuts first: e^{−kρh} decay, or the box's algebraic envelope (alone at h = 0);
+    # the probes share one grid, so it takes the largest
+    Kbox = box_tail_cutoff(min(Δx, Δy, Δz), rtol)
+    Kcut = tail_bound(maximum(h > 0 ? min(decay_cutoff(h; target_decay=target_decay), Kbox) : Kbox for h in hs),
+                      kmax; kρ_cap=kρ_cap)
     kx_ratio_max = max(Kcut / kmax, 1.0 + 1e-6)
 
     kρ, wρ, info = adaptive_kx_grid(fs, kbreaks; rtol=Float64(rtol), atol=Float64(atol), kr_order=kr_order,
-                                    maxevals=maxevals, Leff=Leff, kx_ratio_max=kx_ratio_max,
-                                    warn_stall=on_stall === :warn)
+                                    maxevals=maxevals, Leff=Leff, target_decay=Float64(target_decay),
+                                    kx_ratio_max=kx_ratio_max, warn_stall=on_stall === :warn)
     info = merge(info, (probes=[(p[1], p[2], p[3], p[4], p[5], p[6][2], p[6][1]) for p in probes],
                         Leff=Leff, tail_bound=Kcut, n_kρ_solves=length(memo)))
     stalled = [i for i in eachindex(probes) if info.per_probe_fin[i].stalled]
@@ -298,7 +311,7 @@ end
 """
     point_kx_grid(stack, ω, source_layer; ρ_max=0.0, pz=nothing,
                   z_fracs=[0.1,0.3,0.5,0.7,0.9], rtol=1e-6, atol=0.0,
-                  kr_order=7, maxevals=10_000, kx_ratio_max=80.0)
+                  kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0)
         -> (kx_nodes, wt_nodes, info)
 
 Layer-level adaptive radial grid for a POINT source anywhere in `source_layer`
@@ -317,15 +330,18 @@ Each probe is `kx ↦` the point field at that point (3 components), evaluated w
 `closed_form_pixel` on a one-node 1D cache (memoized per kx, shared by every probe).
 `pz` (default: `thinnest_finite_layer(stack)/20`) sets the near-source probe
 distance and hence `Leff = max(min(pz/2, source-to-interface distance), floor)` for
-the tail fallback. The tail is capped at `kx_ratio_max·kmax` as in
-`adaptive_kx_grid`: a point source's integrand decays like `e^{−kρ|ζ|}`, so this
-cap is what fixes the grid's resolution at the smallest probed `|ζ|`.
+the tail fallback. `pz` is the grid's resolution: a point source has no size of
+its own, its integrand decays only like `e^{−kρ|ζ|}`, so the tail is cut at
+`target_decay/(pz/2)` (`KxGrid.decay_cutoff`), at least 80·kmax (well past the
+propagating band) and at most `kρ_cap` (cost ceiling; it wins over the floor).
+Content closer to the source than `pz/2` is not resolved. `info.tail_bound` is
+the bound used.
 """
 function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                        ρ_max::Real=0.0, pz::Union{Nothing,Real}=nothing,
                        z_fracs::AbstractVector{<:Real}=[0.1, 0.3, 0.5, 0.7, 0.9],
                        rtol::Real=1e-6, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
-                       kx_ratio_max::Real=80.0)
+                       kρ_cap::Real=2000.0, target_decay::Real=25.0)
     N = length(stack)
     (1 <= source_layer < N) || error("point_kx_grid: source_layer=$source_layer must be in 1:$(N-1)")
     ωf = Float64(ω)
@@ -359,10 +375,14 @@ function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::I
     fs = Any[(kx -> Vector(closed_form_pixel(cache_at(kx), obs, z, zo, ρ, 0.0, p))) for (obs, zo, z, ρ, p) in probes]
 
     kbreaks = branch_points(stack, ωf)
+    kmax = kbreaks[end]
     Leff = max(min(dist, min_h), 1e-6 * thinnest_finite_layer(stack))
+    Kcut = tail_bound(decay_cutoff(dist; target_decay=target_decay), kmax; kρ_cap=kρ_cap)
     kx, wt, info = adaptive_kx_grid(fs, kbreaks; rtol=Float64(rtol), atol=Float64(atol), kr_order=kr_order,
-                                    maxevals=maxevals, Leff=Leff, kx_ratio_max=Float64(kx_ratio_max))
-    info = merge(info, (n_probes=length(probes), Leff=Leff, n_kx_solves=length(memo), z_fracs=collect(z_fracs), ρ_max=ρ_max))
+                                    maxevals=maxevals, Leff=Leff, target_decay=Float64(target_decay),
+                                    kx_ratio_max=max(Kcut / kmax, 1.0 + 1e-6))
+    info = merge(info, (n_probes=length(probes), Leff=Leff, tail_bound=Kcut, n_kx_solves=length(memo),
+                        z_fracs=collect(z_fracs), ρ_max=ρ_max))
     return kx, wt, info
 end
 
