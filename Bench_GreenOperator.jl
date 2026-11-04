@@ -24,8 +24,8 @@ using LinearAlgebra, Printf, Statistics, Dates, Random
 # A case is skipped, and recorded as such, when box_kρ_grid stalls (it raises) or
 # needs more than BENCH_KMAX kρ per φ on average (default 40k);
 # a (stack, δ) skipped at one size is skipped at the larger ones too, and so is one
-# whose adaptive tail stalled (its row is kept, marked `!`: fixed-band fallback,
-# not converged). BENCH_RESUME=1 skips the cases already in the CSV and reloads
+# whose adaptive tail stalled (its row is kept, marked `!`: the stalled tail keeps its
+# panels as far as it got, not converged). BENCH_RESUME=1 skips the cases already in the CSV and reloads
 # its skips.
 #
 # z skeletons (step 3): on by default, BENCH_SKELETON=0 for the dense blocks,
@@ -72,7 +72,7 @@ CPG = parse(Int, get(ENV, "BENCH_CPG", "4"))   # mirror classes per φ group: 4 
                         # (+4%) and 4× faster to build than 1; hyp pays 1.75× nodes for a 30% faster grid
 BOX_KCAP  = 3000.0
 BOX_NPHI  = 256
-BOX_MAXEV = 200_000     # the hyperbolic source layer's tails need > 50k at 256 φ (else a fixed-band fallback)
+BOX_MAXEV = 200_000     # the hyperbolic source layer's tails need > 50k at 256 φ (else a tail stall)
 NUFFT_EPS = 1e-12
 PHI_CHUNK = 64          # cache + operator built per φ chunk and summed (exact: G is linear in the
                         # quadrature sum); a 256-φ biaxial cache does not fit in 16 GB with the build
@@ -187,7 +187,7 @@ for sz in size_order, δ in losses, (name, mk) in stacks
     end
     op, t_cache, t_build = build_layer_operator_grouped(st, ω, src, groups, g, zsrc, zobs; node_budget=NODE_BUDGET,
                                                         skeleton=SKELETON, skeleton_tol=SK_TOL, kw...)
-    nstall = count(i -> i.any_tail_stalled, ginfo.per_group)     # > 0: an adaptive tail fell back to a fixed band
+    nstall = count(i -> i.any_tail_stalled, ginfo.per_group)     # > 0: an adaptive tail stalled (panels kept as far as it got)
 
     P1 = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3); P1[g.Nx ÷ 2, g.Ny ÷ 2, (Ns + 1) ÷ 2, :] .= 1   # one source
     PN = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3)                                               # one per plane
@@ -215,5 +215,5 @@ for sz in size_order, δ in losses, (name, mk) in stacks
     end
     nstall > 0 && (skipped[(name, δ)] = "tail stalled")
 end
-println("\n! = at least one adaptive tail stalled (fixed-band fallback, not converged)")
+println("\n! = at least one adaptive tail stalled (panels kept as far as it got, not converged)")
 println("rows appended to ", relpath(csv, @__DIR__))

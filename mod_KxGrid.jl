@@ -189,7 +189,7 @@ end
 
 """
     adaptive_kx_grid(fs, kbreaks; rtol=1e-6, atol=0.0, kr_order=7,
-                     maxevals=10_000, Leff=1.0, fallback_N=250,
+                     maxevals=10_000, Leff=1.0, fallback_N=250, tail_stall=:keep,
                      target_decay=25.0, kx_ratio_max=80.0, warn_stall=true)
         -> (kx_nodes, wt_nodes, info)
 
@@ -199,8 +199,7 @@ placement (Part 2 of the NUFFT/adaptive-quadrature handoff) -- that fixed grid
 `mod_Dipz_SemiAnalytical.jl` (2026-09-18), kept only as the semi-analytical
 ground-truth comparison's own grid, since this function superseded it
 everywhere else in the live pipeline; `evanescent_umax`/`_evanescent_band_nodes`
-stay here since this function's own tail-stall fallback (below) still needs
-them.
+stay here for this function's optional `tail_stall=:fallback` branch (below).
 `fs::Vector` holds one or more independent probe integrands, each
 `f(kρ::Float64)` a caller-supplied PHYSICAL integrand -- in this project
 always a full per-node reciprocal-space solve's contribution to some scalar-
@@ -268,17 +267,24 @@ revision history) and guarded ongoing by Part 2's validation harness
 (re-summing the frozen nodes through the real per-pixel pipeline and
 comparing to the semi-analytical ground truth).
 
-`Leff`/`fallback_N`/`target_decay` are only used if ANY probe's own TAIL
-integration stalls (hits `maxevals` without reaching `(rtol,atol)` -- the
-oscillatory-large-lateral-offset "hard case" the handoff calls out; should
-not arise at the probe pixel itself, which sits at zero lateral offset by
-construction, but is handled explicitly rather than silently returning an
-under-converged tail). On stall, the tail is replaced -- for ALL probes, one
-shared node set -- by this module's own fixed cosh-substitution evanescent
-band (`evanescent_umax`/`_evanescent_band_nodes`) past `kmax`,
-using the supplied `Leff` -- the caller is expected to pass the actual
-source-to-interface distance here, since it knows the probe geometry and
-this function does not.
+Tail stall (a probe's TAIL integration hits `maxevals` without reaching
+`(rtol,atol)` -- the oscillatory-large-lateral-offset "hard case" the handoff
+calls out) is handled by `tail_stall`, and always warned about (whatever
+`warn_stall`, which only silences the finite-band warnings):
+  - `:keep` (default, 2026-11-03): treated like a finite-band stall -- the tail
+    partition is still the union of every probe's panels, the stalled probes'
+    included as far as they got. The converged probes have already placed panels
+    on any narrow tail structure, so nothing they resolved is thrown away.
+  - `:fallback` (the previous behaviour): the tail is replaced -- for ALL probes,
+    one shared node set -- by this module's fixed cosh-substitution evanescent
+    band (`evanescent_umax`/`_evanescent_band_nodes`, `fallback_N` nodes,
+    `Leff` = the caller's source-to-interface distance) past `kmax`.
+Why `:keep` became the default: `branch_points` only marks layers with
+Re ε > 0, so in a stack with a hyperbolic (or metallic) layer every polariton
+pole sits in the "tail", far past `kmax` (ZrS₂ on Au under Si, 250 cm⁻¹: poles at
+9–186 × kmax, widths ~1e-4 nm⁻¹). There 4 of 100 probes still stalled at
+maxevals = 1e6, and `:fallback`'s 250 cosh nodes (Δk ≈ 4 % of k) put the slab
+field 23 % off a 49k-node Gauss–Legendre reference, whatever `maxevals`.
 
 `kx_ratio_max` (2026-08-21 fix, found during Part 3's multi-dipole biaxial
 validation -- not merely the stall-fallback's own cap anymore): ALWAYS caps
@@ -343,7 +349,7 @@ of every probe's own tail-stall flag.
 function adaptive_kx_grid(fs::Vector, kbreaks::Vector{Float64};
                           rtol::Float64=1e-6, atol::Float64=0.0,
                           kr_order::Int=7, maxevals::Int=10_000,
-                          Leff::Float64=1.0, fallback_N::Int=250,
+                          Leff::Float64=1.0, fallback_N::Int=250, tail_stall::Symbol=:keep,
                           target_decay::Float64=25.0, kx_ratio_max::Float64=80.0, warn_stall::Bool=true)
     isempty(kbreaks) && error("adaptive_kx_grid: kbreaks cannot be empty")
     isempty(fs) && error("adaptive_kx_grid: fs cannot be empty")
@@ -403,8 +409,14 @@ function adaptive_kx_grid(fs::Vector, kbreaks::Vector{Float64};
         per_probe_tail[i] = (E=Etail, stalled=stalled)
     end
 
-    if any_tail_stalled
-        @warn "adaptive_kx_grid: at least one probe's evanescent tail past kmax=$kmax did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals -- falling back to the fixed cosh-substitution evanescent band (Leff=$Leff) for ALL probes (a shared node set), per this function's own documented fallback."
+    tail_stall in (:keep, :fallback) || error("adaptive_kx_grid: tail_stall must be :keep or :fallback")
+    if any_tail_stalled                     # always: callers silencing `warn_stall` (box_kρ_grid) do not report tail stalls
+        nst = count(p -> p.stalled, per_probe_tail)
+        @warn "adaptive_kx_grid: $nst of $(length(fs)) probes' evanescent tail past kmax=$kmax did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals -- " *
+              (tail_stall === :keep ? "keeping the union of every probe's tail panels (stalled probes' panels as far as they got)." :
+                                      "falling back to the fixed cosh-substitution evanescent band (Leff=$Leff, fallback_N=$fallback_N) for ALL probes.")
+    end
+    if any_tail_stalled && tail_stall === :fallback
         umax = evanescent_umax(kmax, Leff; target_decay=target_decay, kx_ratio_max=kx_ratio_max)
         nodes_tail, wts_tail = _evanescent_band_nodes(kmax, umax, fallback_N)
     else

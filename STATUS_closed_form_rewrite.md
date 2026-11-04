@@ -281,6 +281,20 @@ Results at ω = 2π are unchanged (all suites pass with the same errors), so exi
   - `target_decay = 25` ≈ log(1/rtol) plus a margin for near-field prefactors.
 - Validation vs the unchanged commit: Point, Box, Operator, Assembly, Grid all PASS with the same errors (≤ 1e-13 changes). The box suite's [P] source-plane profile (vacuum, pz = 0.05) improves: the point source's max |Ez|² inside the slab goes 4618 → 35.6 (box 27.9), the old 80·kmax ≈ 503 cap having left an undecayed tail (e^{−3}) at rows 0.006 from the source.
 
+## Tail stall keeps its panels (2026-11-03, branch `fix-tail-stall-keep-segments`)
+
+Found while reproducing hyperbolic results (Saha et al., *Adv. Mater.* 38, e74154 (2026), Fig. 1e) in a git-free copy of the repository (`Figures_Master`, at 7690310).
+
+- **Bug.** When any probe's tail `[kmax, ∞)` hit `maxevals`, `adaptive_kx_grid` discarded every probe's tail partition, including the converged ones, and used a fixed 250-node cosh band instead. Callers could not change `fallback_N`. `branch_points` only marks Re ε > 0 layers, so in a stack with a hyperbolic or metallic layer every polariton pole lies in the tail. The case was ZrS₂ 150 nm on Al₂O₃/Au under Si at 250 cm⁻¹, in nm units: kmax = 5.4e-4, poles at 9–186·kmax, widths ~1e-4. There the cosh band's spacing (Δk ≈ 4% of k) gave a slab field 23% off a 44–49k-node Gauss–Legendre reference, whatever `maxevals` (4 of 100 probes still stall at 1e6).
+- **Fix.** New keyword `tail_stall = :keep` (default). It warns, then keeps the union of every probe's tail panels, with stalled probes' panels included as far as they got. This is the same treatment a finite-band stall gets. `:fallback` restores the old behaviour. The tail-stall warning is always printed, because `warn_stall` only silences finite-band warnings and `box_kρ_grid` passes `warn_stall=false`. `info.any_tail_stalled` and `per_probe_tail` are unchanged.
+- Same case with `:keep`: 13.7k nodes, 1.0e-3 at `maxevals` = 1e4, versus 475 nodes and 2.3e-1 before. The node count grows with `maxevals` when a probe stalls: 85k nodes at 1e5, for the same accuracy.
+- **To re-run.** These results used the old fallback tail and may be off by a similar margin: hyp δ = 1e-6 in the benchmark ("tail stalls, fixed-band fallback" above), the εzz = −1 far-lateral probe, the `tails_stalled > 0` rows of `bench_*.csv`, and `logs/bench_hyp_1e-3.log`, `logs/bench_green_operator_precise_hyp.log`, `logs/loss_sweep_hyp.log`. Expect larger grids and longer runs there, since `BOX_MAXEV` = 200k.
+- **Still open.**
+  - `branch_points` gives no scale for negative-ε or hyperbolic layers. A break at a few π/d per such layer would move the polariton band into the adaptive finite bands.
+  - A stalled probe's tail contribution could be capped.
+  - The tail map `kmax + t/(1−t)` is not scale-invariant: in nm units the tail occupies t ∈ [0, 0.8].
+- Validation: `Gz_TailStall_Validation.jl` (new) plus the suite, see below.
+
 ## Changes since 2026-09-24
 
 - **2026-09-28/30: Gila anisotropic study.** Written up in `RESULTS_gila_anisotropic_comparison.md`, with metrics in `diagnostics/results_summary.csv` (regenerate with `diagnostics/summarize_results.jl`). Conclusions:
@@ -329,6 +343,7 @@ Load everything with `include("ClosedForm.jl")`.
   - Exterior `D` = exact slab average (1D, 2D biaxial/gyrotropic; thick box with |Im Q|·Δz/2 ≈ 600; box touching an interface): 6e-13 or better.
   - Interior: `σ_b = −1`, `Ez_local` sign (1/kρ² decay), bulk 3×3 Maxwell solve 2e-15, face continuity, interior = exact average of point fields 1e-15.
   - Writes `Gz_ClosedForm_SourcePlane.png`.
+- **`Gz_TailStall_Validation.jl`** (2026-11-03): hyperbolic ZrS₂/Au stack where 26 of 100 `point_kx_grid` probes stall in the tail; slab field vs a 44k-node Gauss–Legendre reference, PASS below 1e-2 (1.0e-3 with `tail_stall = :keep`; the old fallback gave 2.3e-1).
 - **`Gz_ClosedForm_Grid_Validation.jl`** (~5 min):
   - `point_kx_grid` vs a dense rule.
   - `box_kρ_grid` vs a dense rule per row group (self slab / neighbour voxel / across interface), compared with a point-probed axis. Converged to the tail bound; see open items.

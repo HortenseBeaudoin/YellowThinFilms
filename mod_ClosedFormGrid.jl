@@ -37,8 +37,8 @@ Probes (for each box-centre depth in `zbar`):
 
 Tail. Outside the slab the box integrand decays like `e^{−kρ·h}` with `h` the
 distance to the box's NEAR face (not to its centre), so `Leff = h` (plus the
-interface distance for reflected terms) is what the fallback evanescent band
-uses. Inside the slab there is no exponential factor: the integrand decays
+interface distance for reflected terms) is what the fixed evanescent band
+uses (only with `adaptive_kx_grid(...; tail_stall=:fallback)`). Inside the slab there is no exponential factor: the integrand decays
 only algebraically, with the a-priori envelope `tail(K) ~ log(KΔ)/(KΔ)`,
 `Δ = min(Δx_box, Δy_box, Δz_box)`. Each probe's cutoff is whichever cuts first,
 `min(target_decay/h, K_box)` with `K_box` from `log(KΔ)/(KΔ) ≤ rtol`
@@ -121,8 +121,8 @@ number of distinct kρ solves.
 `maxevals` (real-axis poles of a lossless or nearly lossless stack, or an
 under-resolved probe): `:error` (default) throws, listing the stalled probes;
 `:warn` returns the unconverged grid with `adaptive_kx_grid`'s warnings
-(diagnostics only). A stalled TAIL is not an error: it falls back to
-`adaptive_kx_grid`'s fixed evanescent band, reported in `info.any_tail_stalled`.
+(diagnostics only). A stalled TAIL is not an error: `adaptive_kx_grid` warns and keeps
+the union of every probe's tail panels, reported in `info.any_tail_stalled`.
 """
 function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                      box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, phi=nothing, lateral_dir::Real=0.0, ρ_far::Real=0.0,
@@ -330,7 +330,7 @@ Each probe is `kx ↦` the point field at that point (3 components), evaluated w
 `closed_form_pixel` on a one-node 1D cache (memoized per kx, shared by every probe).
 `pz` (default: `thinnest_finite_layer(stack)/20`) sets the near-source probe
 distance and hence `Leff = max(min(pz/2, source-to-interface distance), floor)` for
-the tail fallback. `pz` is the grid's resolution: a point source has no size of
+the tail fallback (`tail_stall=:fallback` only). `pz` is the grid's resolution: a point source has no size of
 its own, its integrand decays only like `e^{−kρ|ζ|}`, so the tail is cut at
 `target_decay/(pz/2)` (`KxGrid.decay_cutoff`), at least 80·kmax (well past the
 propagating band) and at most `kρ_cap` (cost ceiling; it wins over the floor).
