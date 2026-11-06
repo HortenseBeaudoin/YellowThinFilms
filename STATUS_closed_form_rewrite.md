@@ -293,7 +293,43 @@ Found while reproducing hyperbolic results (Saha et al., *Adv. Mater.* 38, e7415
   - `branch_points` gives no scale for negative-ε or hyperbolic layers. A break at a few π/d per such layer would move the polariton band into the adaptive finite bands.
   - A stalled probe's tail contribution could be capped.
   - The tail map `kmax + t/(1−t)` is not scale-invariant: in nm units the tail occupies t ∈ [0, 0.8].
-- Validation: `Gz_TailStall_Validation.jl` (new) plus the suite, see below.
+- Validation: `Gz_TailStall_Validation.jl` (new) plus the suite, see below. *(2026-11-06: superseded -- the tail is gone, and the 1e-3 there was the `_walk_stack` guard; see "Unified k-space quadrature".)*
+
+## Unified k-space quadrature (2026-11-06, branch `unified-kspace-quadrature`, from `fix-tail-stall-keep-segments`)
+
+Implements `HANDOUT_quadrature_hyperbolic_gyrotropic.md` (P1–P5) as one design instead of per-symptom fixes. P6 (contour deformation) is not done.
+
+- **Feature map first** (`mod_KSpaceFeatures.jl`, new): `kspace_features(stack, ω, source_layer; h_min, ρ_max, dims)` collects everything a rule needs before any quadrature:
+  - light lines of every layer from the full ε and μ tensors (`KxGrid.layer_light_lines`: `det(ω²ε + kρ²K̂μ⁻¹K̂) = 0`, a quadratic in kρ²). μ, biaxial, tilted and gyrotropic layers are now included; the semi-infinite layers' lines are flagged singular;
+  - real-axis poles `(q, Γ, φ)` from a log-spaced scan of the source layer's cavity response (`real_axis_poles`: largest singular value of the edge reflections `RL`, `RR` and of `(I − ΦF RL ΦB RR)⁻¹`), refined by golden section, `Γ` from the half-level width. In 2D the scan runs over 32 φ (one for azimuthally symmetric stacks, `[0, π/2]` for diagonal ones), and poles are chained into segments along their φ tracks (`_clusters`);
+  - cut-off `Kcut = target_decay/h_min` from the geometry only (floor 2·kmax, was 80·kmax). No tail: the poles are inside the band;
+  - 2D: `N_φ` = largest of 64, `2.5·Kcut·ρ_max` (lateral harmonics) and `1.5·log(10/rtol)/η` with `η = Γ/|dq/dφ|` (a pole moving with φ makes the integrand peak in φ; the trapezoid converges as `e^{−Nη}`). The pole term dominates in practice (InSb 1382, MoO₃ 682); it over-estimates MoO₃ at ρ = 0, which converges at 64–128.
+- **Two engines, chosen by material** (`material_class`: `:dielectric`, `:metallic`, `:hyperbolic`, `:gyrotropic`, from the values of ε and μ at this ω, not a type; `choose_engine(stack, :auto)`): any non-dielectric layer → `:fixed`, all dielectric → `:adaptive`.
+  - `:fixed` (`fixed_kρ_rule`): composite Gauss–Legendre on panels from `KxGrid.graded_panels`, target width = min of background (`e^{−kρh}`, `e^{ikρρ}`, ×10 per decade), geometric grading onto each singular light line, and `≈Γ` (from `rtol`, Bernstein-ellipse bound) over each pole segment. The two panels touching a singular light line are integrated in `u`, `kρ = L ∓ u²` (`gl_rule(...; singular)`), which removes the `1/k_z` singularity; grading alone needed 2⁻⁴⁶ for 1e-6, which puts nodes within 1e-14 of `L`, where the general `eigen` path returns garbage (seen: O(1) errors on the uniaxial-μ 2D case).
+  - `:adaptive` (`adaptive_kx_grid`): Gauss–Kronrod on `[0, Kcut]`, seeded (QuadGK `eval_segbuf`) with the light lines, geometric grading onto the singular ones (2⁻ᵍ, g = 2·log2(10/rtol); capped at 2⁻³⁰ for the box grid, general eigen path), pole segments and ×2 log seeds. Without the grading it reported convergence 1e-2 off next to a lossless light line. The `t/(1−t)` tail, `tail_stall`, `Leff`, `fallback_N` and `kx_ratio_max` are gone; `info.per_probe_fin`/`any_tail_stalled` → `per_probe`/`any_stalled`, plus `panels`.
+- **Builders.** `point_kx_grid(...; engine=:auto, check, h_min, rule)`; new `point_kρ_grid_2d` (2D point source, any stack, fixed rule, one kρ rule for all φ, `N_φ` from the features) — the default that gyrotropic and in-plane anisotropic point sources lacked; `box_kρ_grid` keeps its adaptive engine and probes, now seeded by the features with the band straight to its cut-off. `check=true` (point builders) rebuilds with halved panels (and `2N_φ` in 2D, as the mean of the `N_φ` rule and the one shifted by `π/N_φ`) and reports `info.check`. 2D evaluations go through `chunked_2d` (kρ chunks of ≤ 1.5M nodes; a 2D cache costs ~2.5 kB/node, 6M nodes do not fit in 16 GB).
+- **Solver bug found on the way** (`mod_FieldSolver.jl`, `_walk_stack`): the guard `cond(S11k) > 1/tol` zeroed the whole amplitude transmitted into a layer whose two modes decay at very different rates (150 nm ZrS₂: e^{−21} vs e^{−3.7}), i.e. a badly scaled, not singular, block. In the ZrS₂ case the slab field was dropped for kρ ≳ 0.142 nm⁻¹, which is the "~1e-3 floor" of the handout and of the 2026-11-03 tail-stall entry. Now `_cond2x2_eq` (columns scaled to unit norm first). ZrS₂ goes from ~1e-3 to 3.7e-10. **Re-run** any result with a thick hyperbolic or metallic layer below or above the source (the Funky ZrS₂ figure at least).
+- **Hand rules in the figures.** Two were themselves off by ~1e-6 (hBN backward wave: cut at 120 µm⁻¹, no grading onto k₀; MoO₃ twisted: grading to 2⁻¹⁰ only, 6.8e-6), the InSb one by 4.9e-5 (pole panels k₀/400, against grazing poles with Γ = 2e-4 k₀). Not re-run.
+- **Validation.** New `Gz_ClosedForm_Quadrature_Validation.jl` (replaces `Gz_TailStall_Validation.jl`), all PASS, rtol = 1e-6 defaults:
+
+| Case | Rule | Error |
+|---|---|---|
+| [L] light lines (iso, uniaxial ε & μ, magnetic, Voigt), classes, engine choice | — | 3e-16 |
+| [W] ZrS₂ transmitted field continuous across kρ = 0.14209 | — | 1.2e-4 (step 1e-6) |
+| [Z] ZrS₂/Au, 1D, vs 44k-node GL | 24k nodes, 6 poles | 3.7e-10 (check 1.4e-10) |
+| [H] hBN/BaF₂ 1500 / 812 cm⁻¹, 1D, vs hand rule quartered | 5.0k / 4.8k nodes (hand: 192k / 206k) | 3.0e-8 / 5.0e-9 |
+| [U] dipole above (ε, μ) half-space ×4 materials ×2 heights, 1D and 2D, vs Sommerfeld | — | ≤ 3.5e-7 |
+| [I] InSb Ω = 1.09, 2D, scattered on source plane, ±30 µm | 4032 kρ × 1382 φ | refined kρ 3.9e-10, 2N_φ 2.1e-8 |
+| [M] MoO₃ 72° bilayer, 2D, ±0.3 µm | 2048 kρ × 682 φ | hand rule (2⁻⁴⁰) 2.1e-10, 2N_φ 2.6e-15 |
+| [C] `check=true` in 2D | — | 1.3e-12 / 1.5e-12 |
+
+  Older suites (Point, Grid, Box, Operator, Assembly, Foundation) all PASS on the final code. The adaptive grids got larger and more accurate from the graded seeds: Grid [P] at rtol 1e-6 1185 → 2430 nodes, 9.3e-11 → 1.1e-11; box at rtol 1e-4 8910 → 9735 kρ, self slab 9.5e-9 → 1.0e-11, but build 10 s → 34 s (the pole scan and ~60 extra seeds per light line × probes). The box seeds could be graded less deeply if that cost matters.
+- **Open.**
+  - The pole-track `N_φ` is conservative (MoO₃ at ρ = 0: 682 where 128 gives 2e-9). A φ-adaptive rule, or weighting each track by its decay `e^{−q h_min}`, would cut it.
+  - A light line that moves with φ (biaxial, gyrotropic half-spaces) is only substituted at the scanned φ; between them it sits in graded panels.
+  - The lossless limit: a real-axis pole is reported at width `1e-12·q` and gets very fine panels; the integral is still ill-defined there (P6).
+  - Box sources: features seed the adaptive grid, but no box case from the handout was re-validated.
+  - The point probes for `:adaptive` still put sources at `z_fracs·d` when `h_min` is not given.
 
 ## Changes since 2026-09-24
 
@@ -343,7 +379,7 @@ Load everything with `include("ClosedForm.jl")`.
   - Exterior `D` = exact slab average (1D, 2D biaxial/gyrotropic; thick box with |Im Q|·Δz/2 ≈ 600; box touching an interface): 6e-13 or better.
   - Interior: `σ_b = −1`, `Ez_local` sign (1/kρ² decay), bulk 3×3 Maxwell solve 2e-15, face continuity, interior = exact average of point fields 1e-15.
   - Writes `Gz_ClosedForm_SourcePlane.png`.
-- **`Gz_TailStall_Validation.jl`** (2026-11-03): hyperbolic ZrS₂/Au stack where 26 of 100 `point_kx_grid` probes stall in the tail; slab field vs a 44k-node Gauss–Legendre reference, PASS below 1e-2 (1.0e-3 with `tail_stall = :keep`; the old fallback gave 2.3e-1).
+- **`Gz_ClosedForm_Quadrature_Validation.jl`** (2026-11-06, ~10 min; replaces `Gz_TailStall_Validation.jl`): the feature-driven quadrature on the handout's cases (ZrS₂, hBN, μ half-spaces vs Sommerfeld, InSb 2D, MoO₃ 2D), see "Unified k-space quadrature".
 - **`Gz_ClosedForm_Grid_Validation.jl`** (~5 min):
   - `point_kx_grid` vs a dense rule.
   - `box_kρ_grid` vs a dense rule per row group (self slab / neighbour voxel / across interface), compared with a point-probed axis. Converged to the tail bound; see open items.

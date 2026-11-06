@@ -1,11 +1,31 @@
 """
-mod_ClosedFormGrid.jl -- adaptive reciprocal-space quadrature for the closed-form
-caches (`PLAN_closed_form_point_source_rewrite.md` §4.2): `point_kx_grid` (1D, point
-source, isotropic/uniaxial) and `box_kρ_grid` (2D, box-aware). Both converge probe
-integrands evaluated through the SAME closed-form synthesis the field uses, with
-`KxGrid.adaptive_kx_grid` (h-adaptive Gauss–Kronrod per probe, merged panel
-boundaries). The 1D and 2D grids are independent quadratures -- build them
-separately.
+mod_ClosedFormGrid.jl -- reciprocal-space quadrature for the closed-form caches
+(`PLAN_closed_form_point_source_rewrite.md` §4.2,
+`HANDOUT_quadrature_hyperbolic_gyrotropic.md`):
+
+  - `point_kx_grid`    -- 1D, point source, azimuthally symmetric stack;
+  - `point_kρ_grid_2d` -- 2D `(kρ, φ)`, point source, any stack (biaxial, tilted,
+    gyrotropic): one kρ rule shared by every φ, `N_φ` from the geometry;
+  - `box_kρ_grid`      -- 2D, box source, any stack (`box_kρ_grid_grouped`: one kρ
+    rule per φ group).
+
+Every builder starts from `KSpaceFeatures.kspace_features`: light lines (full ε
+and μ), real-axis poles from a scan of the source layer's cavity response, and a
+cut-off set by the geometry (`target_decay/h_min`). The poles are inside the
+finite band `[0, Kcut]`; there is no tail. Then one of two engines
+(`KSpaceFeatures.choose_engine`, from the materials):
+
+  - `:fixed`    -- feature-driven composite Gauss–Legendre (`fixed_kρ_rule`):
+    graded onto the singular light lines, panel ≈ pole width over every pole
+    cluster, coarsening past them while following `e^{−kρh}` and `e^{ikρρ}`.
+    Default for stacks with a metallic, hyperbolic or gyrotropic layer.
+  - `:adaptive` -- h-adaptive Gauss–Kronrod (`KxGrid.adaptive_kx_grid`) on probe
+    integrands evaluated through the SAME closed-form synthesis the field uses,
+    seeded with the features. Default for all-dielectric stacks; always used by
+    the box grid (its probes include the box's interior term).
+
+`check=true` (point builders) rebuilds with every panel halved (and `2N_φ` in 2D),
+evaluates the probes on both rules and reports the relative change in `info.check`.
 
 ── `box_kρ_grid` ──
 
@@ -19,9 +39,7 @@ probe point, evaluated through the SAME synthesis the field uses
 (`closed_form_G` on a one-kρ-node `CavityTransferCache2D`, φ-summed on the
 fixed φ grid), so what is converged is exactly what is later integrated. The
 per-kρ cache is built once and evaluated at every probe; the probe values are
-memoized (not the cache, which is too large to keep for every visited kρ). `KxGrid.adaptive_kx_grid`
-(kept as-is) does the h-adaptive Gauss–Kronrod refinement, per probe, and
-merges the panel boundaries.
+memoized (not the cache, which is too large to keep for every visited kρ).
 
 Probes (for each box-centre depth in `zbar`):
   - self voxel `(0,0,z̄)` and lateral neighbour `(Δx_box,0,z̄)` -- inside the slab,
@@ -33,44 +51,43 @@ Probes (for each box-centre depth in `zbar`):
   - with `ρ_far > 0`: a far lateral point just outside the slab and one inside it
     (`(ρ_far,0,z̄)`): the interior integrand at large `kρ·ρ` oscillates without any
     decay, so the off-centre pixels of the self slab need this probe for the
-    tail panels to resolve `e^{i kρ ρ cosφ}` out to the tail bound.
+    band to resolve `e^{i kρ ρ cosφ}` out to the cut-off.
 
-Tail. Outside the slab the box integrand decays like `e^{−kρ·h}` with `h` the
-distance to the box's NEAR face (not to its centre), so `Leff = h` (plus the
-interface distance for reflected terms) is what the fixed evanescent band
-uses (only with `adaptive_kx_grid(...; tail_stall=:fallback)`). Inside the slab there is no exponential factor: the integrand decays
-only algebraically, with the a-priori envelope `tail(K) ~ log(KΔ)/(KΔ)`,
-`Δ = min(Δx_box, Δy_box, Δz_box)`. Each probe's cutoff is whichever cuts first,
-`min(target_decay/h, K_box)` with `K_box` from `log(KΔ)/(KΔ) ≤ rtol`
-(`box_tail_cutoff`); inside the slab (`h = 0`) only `K_box` applies. The probes
-share one grid, so the upper kρ bound is the largest of these, at least 80·kmax
-and at most `kρ_cap` (`KxGrid.tail_bound`). In practice `K_box ≫ kρ_cap` as soon
-as an interior probe is present, so `kρ_cap` is what truncates the self-slab tail:
-the field inside the source slab is converged to that bound, not absolutely. The
-φ grid must resolve `kρ·ρ` up to that bound for the off-centre probes -- `N_phi`
-is the caller's. The optional quasi-static (Newell) subtraction of §4.2, which
-would remove that truncation, is not implemented.
+Cut-off. Outside the slab the box integrand decays like `e^{−kρ·h}` with `h` the
+distance to the box's NEAR face (not to its centre). Inside the slab there is no
+exponential factor: the integrand decays only algebraically, with the a-priori
+envelope `tail(K) ~ log(KΔ)/(KΔ)`, `Δ = min(Δx_box, Δy_box, Δz_box)`. Each probe's
+cutoff is whichever cuts first, `min(target_decay/h, K_box)` with `K_box` from
+`log(KΔ)/(KΔ) ≤ rtol` (`box_tail_cutoff`); inside the slab (`h = 0`) only `K_box`
+applies. The probes share one grid, so the cut-off is the largest of these, at
+least 80·kmax and at most `kρ_cap` (`KxGrid.tail_bound`). In practice
+`K_box ≫ kρ_cap` as soon as an interior probe is present, so `kρ_cap` is what
+truncates the self-slab band: the field inside the source slab is converged to
+that bound, not absolutely. The φ grid must resolve `kρ·ρ` up to that bound for the
+off-centre probes -- `N_phi` is the caller's. The optional quasi-static (Newell)
+subtraction of §4.2, which would remove that truncation, is not implemented.
 
-The point grid uses the same rule with `h = pz/2` and no box term
-(`point_kx_grid`).
-
-Losses. The kρ path is the real axis (breaks at the light lines only, no
-contour deformation or pole extraction), so a lossless stack puts its
-guided-mode poles on the path and the finite bands cannot converge. A fully
-lossless stack gets a warning up front (`is_lossless`); a stalled finite band
-raises (`on_stall=:error`, the default) instead of returning an unconverged
-grid. Iso/uniaxial stacks converge with δ = Im ε ≈ 1e-6 on every layer, ≈ 3e-5
-from the lossless limit (`diagnostics/loss_sweep.jl`).
+Losses. The kρ path is the real axis (no contour deformation or pole
+extraction), so a lossless stack puts its guided-mode poles on the path. A fully
+lossless stack gets a warning up front (`is_lossless`); a stalled adaptive band
+raises (`on_stall=:error`, the default) instead of returning an unconverged grid.
+Iso/uniaxial stacks converge with δ = Im ε ≈ 1e-6 on every layer, ≈ 3e-5 from the
+lossless limit (`diagnostics/loss_sweep.jl`). The fixed engine never stalls, but
+its pole panels scale with the pole width: a lossless pole has none, and the scan
+reports it at the floor width `1e-12·q`.
 """
 module ClosedFormGrid
 
-export point_kx_grid, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
+export point_kx_grid, point_kρ_grid_2d, chunked_2d, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
 
 import ..ModeSolver: AbstractLayer, _is_azimuthally_symmetric_stack
-import ..KxGrid: adaptive_kx_grid, branch_points, build_kphi_grid, thinnest_finite_layer, decay_cutoff, tail_bound
+import ..KxGrid: adaptive_kx_grid, kronrod_rule, branch_points, build_kphi_grid, thinnest_finite_layer,
+                decay_cutoff, tail_bound, gl_rule, halve_panels
+import ..KSpaceFeatures: kspace_features, fixed_kρ_rule, adaptive_seeds, choose_engine, _grade_for
 import ..CavityTransfer: build_cavity_transfer_1d, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G, closed_form_pixel
 using Base.Threads
+using LinearAlgebra: norm
 
 """
     box_tail_cutoff(Δ, rtol) -> K
@@ -99,7 +116,7 @@ _lossless(m) = all(iszero(imag(m[i, j])) for i in 1:3, j in 1:3)
 """
     box_kρ_grid(stack, ω, source_layer; box, zbar=nothing, N_phi=64, phi=nothing, lateral_dir=0.0, ρ_far=0.0,
                 rtol=1e-4, atol=0.0, kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0,
-                include_interior=true, on_stall=:error)
+                include_interior=true, on_stall=:error, scan_poles=true, N_φ_scan=32)
         -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
 
 `box = (Δx_box, Δy_box, Δz_box)`. `zbar` (local depths of the box centre in
@@ -114,21 +131,28 @@ fastest at `φ = θ`, so a φ group needs its probes along its own φ (on the fu
 drops the inside-the-slab probes (then every probe decays exponentially and the
 tail bound is `target_decay/h_min`, see the module notes). `kρ_cap` (default 2000) is a
 cost ceiling, not derived from the physics; it wins over the 80·kmax floor. `info` merges
-`adaptive_kx_grid`'s info with the probe list, `Leff`, the tail bound and the
-number of distinct kρ solves.
+`adaptive_kx_grid`'s info with the probe list, `h_min` (smallest probe distance), the
+cut-off (`tail_bound`), the number of distinct kρ solves and the `features`.
+
+Seeds. The adaptive refinement starts from `KSpaceFeatures.adaptive_seeds`: the
+light lines at the grid's φ, the real-axis poles found by the scan
+(`scan_poles=true`; over the grid's own φ when there are at most `N_φ_scan` of
+them, e.g. one group of `box_kρ_grid_grouped`, else over `N_φ_scan` directions),
+and log-spaced seeds from `kmax` to the cut-off. The band runs straight to the cut-off
+(no `t/(1−t)` tail since 2026-11), so a pole far past the light lines is inside
+the band from the first pass.
 
 `on_stall`: what to do when a probe's finite bands do not reach `rtol` within
 `maxevals` (real-axis poles of a lossless or nearly lossless stack, or an
 under-resolved probe): `:error` (default) throws, listing the stalled probes;
 `:warn` returns the unconverged grid with `adaptive_kx_grid`'s warnings
-(diagnostics only). A stalled TAIL is not an error: `adaptive_kx_grid` warns and keeps
-the union of every probe's tail panels, reported in `info.any_tail_stalled`.
+(diagnostics only).
 """
 function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                      box::NTuple{3,<:Real}, zbar=nothing, N_phi::Int=64, phi=nothing, lateral_dir::Real=0.0, ρ_far::Real=0.0,
                      rtol::Real=1e-4, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
                      kρ_cap::Real=2000.0, target_decay::Real=25.0, include_interior::Bool=true,
-                     on_stall::Symbol=:error)
+                     on_stall::Symbol=:error, scan_poles::Bool=true, N_φ_scan::Int=32)
     on_stall in (:error, :warn) || error("box_kρ_grid: on_stall=$on_stall must be :error or :warn")
     N = length(stack)
     (1 <= source_layer < N) || error("box_kρ_grid: source_layer=$source_layer must be in 1:$(N-1)")
@@ -193,26 +217,27 @@ function box_kρ_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::In
     end
     fs = Any[(kρ -> vals_at(kρ)[i]) for i in eachindex(probes)]
 
-    kbreaks = branch_points(stack, ωf)
-    kmax = kbreaks[end]
     hs = [p[5] for p in probes]
-    Leff = max(minimum(h for h in hs if h > 0; init=Δz / 2), 1e-6 * thinnest_finite_layer(stack))
+    h_min = max(minimum(h for h in hs if h > 0; init=Δz / 2), 1e-6 * thinnest_finite_layer(stack))
+    kmax = maximum(branch_points(stack, ωf; φs=unique(mod.(φs, π))); init=ωf)
     # per probe, whichever cuts first: e^{−kρh} decay, or the box's algebraic envelope (alone at h = 0);
     # the probes share one grid, so it takes the largest
     Kbox = box_tail_cutoff(min(Δx, Δy, Δz), rtol)
     Kcut = tail_bound(maximum(h > 0 ? min(decay_cutoff(h; target_decay=target_decay), Kbox) : Kbox for h in hs),
                       kmax; kρ_cap=kρ_cap)
-    kx_ratio_max = max(Kcut / kmax, 1.0 + 1e-6)
+    ρ_probe = maximum(hypot(p[3], p[4]) for p in probes)
+    feat = kspace_features(stack, ωf, source_layer; h_min=h_min, ρ_max=ρ_probe, dims=2, Kcut=Kcut,
+                           φ_scan=(length(φs) <= N_φ_scan ? φs : nothing), N_φ_scan=N_φ_scan, scan=scan_poles)
 
-    kρ, wρ, info = adaptive_kx_grid(fs, kbreaks; rtol=Float64(rtol), atol=Float64(atol), kr_order=kr_order,
-                                    maxevals=maxevals, Leff=Leff, target_decay=Float64(target_decay),
-                                    kx_ratio_max=kx_ratio_max, warn_stall=on_stall === :warn)
+    # grading capped at 2⁻³⁰: the general eigen path (biaxial, gyrotropic) fails within ~1e-14 of a light line
+    kρ, wρ, info = adaptive_kx_grid(fs, adaptive_seeds(feat; rtol=rtol, grade=min(30, _grade_for(rtol))); kcut=Kcut, rtol=Float64(rtol), atol=Float64(atol),
+                                    kr_order=kr_order, maxevals=maxevals, warn_stall=on_stall === :warn)
     info = merge(info, (probes=[(p[1], p[2], p[3], p[4], p[5], p[6][2], p[6][1]) for p in probes],
-                        Leff=Leff, tail_bound=Kcut, n_kρ_solves=length(memo)))
-    stalled = [i for i in eachindex(probes) if info.per_probe_fin[i].stalled]
+                        h_min=h_min, tail_bound=Kcut, n_kρ_solves=length(memo), features=feat))
+    stalled = [i for i in eachindex(probes) if info.per_probe[i].stalled]
     if on_stall === :error && !isempty(stalled)
         list = join(["  layer $(probes[i][1]), z̄ = $(probes[i][6][1]), $(probes[i][6][2]) (error estimate " *
-                     "$(round(info.per_probe_fin[i].E; sigdigits=2)))" for i in stalled], "\n")
+                     "$(round(info.per_probe[i].E; sigdigits=2)))" for i in stalled], "\n")
         error("box_kρ_grid: $(length(stalled))/$(length(probes)) probes' finite bands did not reach rtol=$rtol " *
               "within maxevals=$maxevals:\n$list\n" *
               (is_lossless(stack) ? "The stack is lossless: real-axis guided-mode poles cannot be integrated; add a small loss. " :
@@ -276,7 +301,7 @@ nodes, so its size grows with `N_phi` (35k / 51k / 76k kρ at 8 / 32 / 128 φ, b
 hyperbolic at δ = 1e-3); one φ needs 18–24k. An azimuthally symmetric stack
 gets a single group, identical to `box_kρ_grid`.
 
-`info`: `n_groups`, `n_nodes` (Σ kρ × φ), `nkρ` per group, `any_tail_stalled`,
+`info`: `n_groups`, `n_nodes` (Σ kρ × φ), `nkρ` per group, `any_stalled`,
 `per_group` (each group's `box_kρ_grid` info).
 """
 function box_kρ_grid_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int; N_phi::Int=64,
@@ -302,7 +327,7 @@ function box_kρ_grid_grouped(stack::Vector{<:AbstractLayer}, ω::Real, source_l
         throw(e)
     end
     info = (n_groups=length(groups), n_nodes=sum(length(g.kρ) * length(g.φ) for g in groups),
-            nkρ=[length(g.kρ) for g in groups], any_tail_stalled=any(i -> i.any_tail_stalled, infos),
+            nkρ=[length(g.kρ) for g in groups], any_stalled=any(i -> i.any_stalled, infos),
             per_group=infos)
     return groups, info
 end
@@ -310,54 +335,98 @@ end
 
 """
     point_kx_grid(stack, ω, source_layer; ρ_max=0.0, pz=nothing,
-                  z_fracs=[0.1,0.3,0.5,0.7,0.9], rtol=1e-6, atol=0.0,
-                  kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0)
+                  z_fracs=[0.1,0.3,0.5,0.7,0.9], engine=:auto, rtol=1e-6, atol=0.0,
+                  kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0,
+                  check=false, scan_poles=true, rule=(;), h_min=nothing)
         -> (kx_nodes, wt_nodes, info)
 
-Layer-level adaptive radial grid for a POINT source anywhere in `source_layer`
-of an isotropic/uniaxial stack (the `CavityTransferCache1D` path): source-agnostic,
+Layer-level radial grid for a POINT source anywhere in `source_layer` of an
+isotropic/uniaxial stack (the `CavityTransferCache1D` path): source-agnostic,
 built once per `(stack, ω, source_layer)` and reused for every depth, moment and
 lateral position.
 
-Probes, for each representative source depth `z = z_frac·d` (clamped inside the
-layer) and each of the two canonical moments `x̂`, `ẑ` (on an azimuthally
-symmetric stack `ŷ` needs the same kρ content as `x̂`), at lateral offsets
-`ρ = 0` and `ρ = ρ_max`:
-  - same layer, `pz/2` above and below the source (the near-source content);
-  - same layer, at both layer edges;
-  - across each interface, `pz/2` into the neighbouring layer.
-Each probe is `kx ↦` the point field at that point (3 components), evaluated with
-`closed_form_pixel` on a one-node 1D cache (memoized per kx, shared by every probe).
-`pz` (default: `thinnest_finite_layer(stack)/20`) sets the near-source probe
-distance and hence `Leff = max(min(pz/2, source-to-interface distance), floor)` for
-the tail fallback (`tail_stall=:fallback` only). `pz` is the grid's resolution: a point source has no size of
-its own, its integrand decays only like `e^{−kρ|ζ|}`, so the tail is cut at
-`target_decay/(pz/2)` (`KxGrid.decay_cutoff`), at least 80·kmax (well past the
-propagating band) and at most `kρ_cap` (cost ceiling; it wins over the floor).
-Content closer to the source than `pz/2` is not resolved. `info.tail_bound` is
-the bound used.
+Resolution. `pz` (default `thinnest_finite_layer(stack)/20`) is the grid's
+resolution: a point source has no size of its own, its integrand decays only like
+`e^{−kρ|ζ|}`, so the band is cut at `Kcut = target_decay/(pz/2)`
+(`KxGrid.decay_cutoff`), at least 80·kmax and at most `kρ_cap` (cost ceiling; it
+wins over the floor). Content closer to the source than `pz/2` is not resolved. `h_min` overrides `pz/2`
+(e.g. `2h` for the scattered field of a source at height `h` on its own plane,
+`terms = :scattered`, the direct term added analytically: handout §2g).
+With `h_min` given, the probes (adaptive engine, `check`) only use source depths at
+least `h_min` from the layer's real interfaces. `ρ_max` is the largest lateral
+offset the grid must resolve.
+
+Engine (`KSpaceFeatures.choose_engine`): `:auto` takes `:fixed` when a layer is
+metallic, hyperbolic or gyrotropic, `:adaptive` when every layer is dielectric.
+  - `:fixed`: `fixed_kρ_rule(features; rtol, rule...)` (`rule`: keyword overrides,
+    e.g. `(; order=12, grade=40)`). No probe is evaluated to build it.
+  - `:adaptive`: Gauss–Kronrod converged on probe integrands, seeded with the
+    features. Probes, for each representative depth `z = z_frac·d` and each of the
+    canonical moments `x̂`, `ẑ` (`ŷ` needs the same kρ content as `x̂` on an
+    azimuthally symmetric stack), at lateral offsets `ρ = 0` and `ρ = ρ_max`: same
+    layer `pz/2` above and below the source, both layer edges, and `pz/2` into each
+    neighbouring layer. Each is the point field there (3 components) through
+    `closed_form_pixel` on a one-node cache (memoized per kx).
+
+`check=true`: the probes above are evaluated on the rule and on the rule with every
+panel halved; `info.check = (rel_change, per_probe)` (relative change per probe,
+3-vector norm, against a floor of 1e-6 × the largest probe).
+
+`info`: `engine`, `n_nodes`, `panels`, `any_stalled`, `tail_bound` (= `Kcut`),
+`n_probes`, `features`, `check`, and with `:adaptive` the per-probe errors
+(`adaptive_kx_grid`'s info).
 """
 function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                        ρ_max::Real=0.0, pz::Union{Nothing,Real}=nothing,
-                       z_fracs::AbstractVector{<:Real}=[0.1, 0.3, 0.5, 0.7, 0.9],
+                       z_fracs::AbstractVector{<:Real}=[0.1, 0.3, 0.5, 0.7, 0.9], engine::Symbol=:auto,
                        rtol::Real=1e-6, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
-                       kρ_cap::Real=2000.0, target_decay::Real=25.0)
+                       kρ_cap::Real=2000.0, target_decay::Real=25.0, check::Bool=false,
+                       scan_poles::Bool=true, rule=(;), h_min::Union{Nothing,Real}=nothing)
     N = length(stack)
     (1 <= source_layer < N) || error("point_kx_grid: source_layer=$source_layer must be in 1:$(N-1)")
     ωf = Float64(ω)
-    d = stack[source_layer].d
     pzf = pz === nothing ? thinnest_finite_layer(stack) / 20 : Float64(pz)
-    dist = pzf / 2
+    dist = h_min === nothing ? pzf / 2 : Float64(h_min)
     obs_layers = sort(unique(filter(l -> 1 <= l <= N, [source_layer - 1, source_layer, source_layer + 1])))
+    # an explicit h_min: probe only sources at least h_min from the layer's real interfaces
+    zf_probe = h_min === nothing ? z_fracs : _check_depths(stack, source_layer, z_fracs, dist) ./ stack[source_layer].d
+    probes = _point_probes(stack, source_layer, zf_probe, dist, Float64(ρ_max))
 
-    memo = Dict{Float64,Any}()
-    cache_at(kx) = get!(memo, kx) do
-        build_cavity_transfer_1d(stack, ωf, source_layer, [kx], [1.0]; obs_layers=obs_layers)
+    feat = kspace_features(stack, ωf, source_layer; h_min=dist, ρ_max=ρ_max, dims=1,
+                           target_decay=target_decay, kρ_cap=kρ_cap, scan=scan_poles)
+    eng = choose_engine(stack, engine)
+    if eng === :fixed
+        kx, wt, panels = fixed_kρ_rule(feat; rtol=rtol, rule...)
+        info = (engine=:fixed, n_nodes=length(kx), n_panels=length(panels), panels=panels, any_stalled=false)
+        refined = () -> gl_rule(halve_panels(panels); order=get(rule, :order, 8), singular=feat.singular_lines)
+    else
+        memo = Dict{Float64,Any}()
+        cache_at(kx) = get!(memo, kx) do
+            build_cavity_transfer_1d(stack, ωf, source_layer, [kx], [1.0]; obs_layers=obs_layers)
+        end
+        fs = Any[(kx -> Vector(closed_form_pixel(cache_at(kx), obs, z, zo, ρ, 0.0, p))) for (obs, zo, z, ρ, p) in probes]
+        kx, wt, ainfo = adaptive_kx_grid(fs, adaptive_seeds(feat; rtol=rtol); kcut=feat.Kcut, rtol=Float64(rtol), atol=Float64(atol),
+                                         kr_order=kr_order, maxevals=maxevals)
+        info = merge(ainfo, (engine=:adaptive, n_kx_solves=length(memo)))
+        refined = () -> kronrod_rule(halve_panels(ainfo.panels); kr_order=kr_order)
     end
+    chk = nothing
+    if check
+        v = _probe_values_1d(stack, ωf, source_layer, obs_layers, probes, kx, wt)
+        v2 = _probe_values_1d(stack, ωf, source_layer, obs_layers, probes, refined()...)
+        chk = _rel_change(v, v2)
+    end
+    info = merge(info, (n_probes=length(probes), tail_bound=feat.Kcut, z_fracs=collect(z_fracs), ρ_max=ρ_max,
+                        features=feat, check=chk))
+    return kx, wt, info
+end
 
+# (obs_layer, z_obs, z_src, ρ, moment) for the point builders: same layer ±dist and both
+# edges, dist into each neighbour, moments x̂ and ẑ, at ρ = 0 and ρ_max
+function _point_probes(stack, source_layer::Int, z_fracs, dist::Float64, ρ_max::Float64)
+    d = stack[source_layer].d
     ε = 1e-9 * max(d, 1.0)
-    probes = Tuple{Int,Float64,Float64,Float64,Vector{ComplexF64}}[]   # (obs, z_obs, z_src, ρ, p)
-    min_h = Inf
+    probes = Tuple{Int,Float64,Float64,Float64,Vector{ComplexF64}}[]
     for zf in z_fracs
         z = clamp(zf * d, ε, d - ε)
         zp = source_layer == 1 ? d - z : z
@@ -367,23 +436,150 @@ function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::I
         push!(pts, (source_layer, ε), (source_layer, d - ε))
         source_layer > 1 && push!(pts, (source_layer - 1, stack[source_layer - 1].d - dist))
         push!(pts, (source_layer + 1, min(dist, stack[source_layer + 1].d)))
-        min_h = min(min_h, zp, d - zp)
-        for (obs, zo) in pts, p in (ComplexF64[1, 0, 0], ComplexF64[0, 0, 1]), ρ in unique([0.0, Float64(ρ_max)])
+        for (obs, zo) in pts, p in (ComplexF64[1, 0, 0], ComplexF64[0, 0, 1]), ρ in unique([0.0, ρ_max])
             push!(probes, (obs, zo, z, ρ, p))
         end
     end
-    fs = Any[(kx -> Vector(closed_form_pixel(cache_at(kx), obs, z, zo, ρ, 0.0, p))) for (obs, zo, z, ρ, p) in probes]
+    return probes
+end
 
-    kbreaks = branch_points(stack, ωf)
-    kmax = kbreaks[end]
-    Leff = max(min(dist, min_h), 1e-6 * thinnest_finite_layer(stack))
-    Kcut = tail_bound(decay_cutoff(dist; target_decay=target_decay), kmax; kρ_cap=kρ_cap)
-    kx, wt, info = adaptive_kx_grid(fs, kbreaks; rtol=Float64(rtol), atol=Float64(atol), kr_order=kr_order,
-                                    maxevals=maxevals, Leff=Leff, target_decay=Float64(target_decay),
-                                    kx_ratio_max=max(Kcut / kmax, 1.0 + 1e-6))
-    info = merge(info, (n_probes=length(probes), Leff=Leff, tail_bound=Kcut, n_kx_solves=length(memo),
-                        z_fracs=collect(z_fracs), ρ_max=ρ_max))
-    return kx, wt, info
+"""
+    chunked_2d(f, stack, ω, source_layer, kρ, wρ, φ, wφ; obs_layers, max_nodes=1_500_000)
+
+`Σ_chunks f(cache_chunk)`: `f(cache)` evaluated on 2D caches built over consecutive
+chunks of the kρ rule (at most `max_nodes` kρ × φ nodes each) and summed. Exact
+for anything linear in the quadrature sum (`closed_form_G`, with any `terms`), and
+keeps the memory to one chunk's cache (~2.5 kB per node: 6M nodes do not fit in
+16 GB).
+"""
+function chunked_2d(f, stack, ω, source_layer, kρ, wρ, φ, wφ; obs_layers, max_nodes::Int=1_500_000)
+    step = max(1, max_nodes ÷ max(1, length(φ)))
+    acc = nothing
+    for r in Iterators.partition(eachindex(kρ), step)
+        c = build_cavity_transfer_2d(stack, ω, source_layer, kρ[r], wρ[r], φ, wφ; obs_layers=obs_layers)
+        v = f(c)
+        acc = acc === nothing ? v : acc .+ v
+        c = nothing; GC.gc(false)
+    end
+    return acc
+end
+
+# source depths (caller's local frame) for the probes: `z_fracs·d`, kept only where the
+# source is at least `hmin` from every real interface of its layer (the bottom one for
+# layer 1, whose top is the open half-space); if none is, the depth `hmin` from the
+# nearest real interface. A source closer to an interface than the grid's resolution
+# is not something the grid was built to resolve, so it must not be probed.
+function _check_depths(stack, s::Int, z_fracs, hmin::Float64)
+    d = stack[s].d
+    dist_iface(z) = s == 1 ? z : min(z, d - z)          # layer 1: local z = height above its bottom interface
+    zs = [clamp(zf * d, 1e-9 * d, d - 1e-9 * d) for zf in z_fracs]
+    ok = [z for z in zs if dist_iface(z) >= hmin]
+    isempty(ok) && push!(ok, min(hmin, d))
+    return ok
+end
+
+function _probe_values_1d(stack, ω, s, obs_layers, probes, kx, wt)
+    c = build_cavity_transfer_1d(stack, ω, s, kx, wt; obs_layers=obs_layers)
+    return [Vector{ComplexF64}(closed_form_pixel(c, obs, z, zo, ρ, 0.0, p)) for (obs, zo, z, ρ, p) in probes]
+end
+
+# relative change v → v2 per probe (floor: 1e-6 × the largest probe) and its maximum
+function _rel_change(v, v2)
+    scale = maximum(norm, v2; init=0.0)
+    rel = [norm(a - b) / max(norm(b), 1e-6 * scale) for (a, b) in zip(v, v2)]
+    return (rel_change=maximum(rel; init=0.0), per_probe=rel)
+end
+
+
+"""
+    point_kρ_grid_2d(stack, ω, source_layer; ρ_max, pz=nothing, z_fracs=[0.1,0.5,0.9],
+                     N_phi=nothing, rtol=1e-6, kρ_cap=2000.0, target_decay=25.0,
+                     c_φ=2.5, N_φ_scan=32, check=false, scan_poles=true, rule=(;),
+                     h_min=nothing, terms=:all, max_nodes=1_500_000)
+        -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
+
+`(kρ, φ)` tensor-product grid for a POINT source in `source_layer` of ANY stack
+(biaxial, tilted, gyrotropic: the `CavityTransferCache2D` path, which shares one kρ
+rule across every φ). Handout P4.
+
+  - kρ: `fixed_kρ_rule` on `kspace_features(...; dims=2)`: light lines at every
+    scanned φ, the union over φ of the real-axis poles (merged along their tracks),
+    cut-off `target_decay/h_min` (`h_min = pz/2` unless given) as in `point_kx_grid`.
+  - φ: uniform trapezoid, `N_phi` nodes (default `features.N_φ`, even, so the
+    `φ + π` pairs are on the grid), the largest of 64 and:
+      - `c_φ·Kcut·ρ_max`: the lateral factor `e^{i kρ ρ cos(φ−ψ)}` has harmonics up
+        to `|m| ≈ kρ·ρ`, which the trapezoid resolves only for `N_φ > kρ·ρ`
+        (handout §2f: `c_φ` ≈ 2.4 reached 1e-6 on the MoO₃ map);
+      - `1.5·log(10/rtol)/η_min`: a pole that moves with φ crosses each kρ at some φ,
+        where the integrand peaks with a width `η ≈ Γ/|dq/dφ|` in φ, and the
+        trapezoid converges as `e^{−N_φη}` (InSb at Ω = 1.09, ±30 µm: 8e-2 / 6e-3 at
+        188 / 376 φ against 752).
+
+No φ grouping: the cache's kρ rule must resolve every φ's poles anyway.
+
+`check=true` evaluates the full Green's tensor (3 moments) at the probes (sources at
+the depths `z_fracs·d` that are at least `h_min/2` from the layer's real interfaces,
+or one at `h_min/2`; observation `h_min` above and below in the same layer, `h_min`
+into each neighbour,
+at lateral offsets `0`, `±ρ_max x̂`, `ρ_max ŷ`) on the rule, on the rule with every
+kρ panel halved, and with `2N_φ`; `info.check = (kρ = …, φ = …)`, each
+`(rel_change, per_probe)`. It costs about four field evaluations; every rule is
+evaluated in kρ chunks of at most `max_nodes` (kρ × φ) nodes (`chunked_2d`), and
+`2N_φ` as the mean of the `N_φ` rule and the same rule shifted by `π/N_φ`, so the
+memory stays that of one `max_nodes` cache.
+`terms = :scattered` (a grid for the scattered field, the direct term added
+analytically): the check uses the scattered field in the source layer and also
+probes the source plane itself (`Δz = 0`).
+"""
+function point_kρ_grid_2d(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
+                          ρ_max::Real, pz::Union{Nothing,Real}=nothing,
+                          z_fracs::AbstractVector{<:Real}=[0.1, 0.5, 0.9], N_phi::Union{Nothing,Int}=nothing,
+                          rtol::Real=1e-6, kρ_cap::Real=2000.0, target_decay::Real=25.0,
+                          c_φ::Real=2.5, N_φ_scan::Int=32, check::Bool=false, scan_poles::Bool=true, rule=(;),
+                          h_min::Union{Nothing,Real}=nothing, terms::Symbol=:all, max_nodes::Int=1_500_000)
+    N = length(stack)
+    (1 <= source_layer < N) || error("point_kρ_grid_2d: source_layer=$source_layer must be in 1:$(N-1)")
+    ωf = Float64(ω)
+    pzf = pz === nothing ? thinnest_finite_layer(stack) / 20 : Float64(pz)
+    dist = h_min === nothing ? pzf / 2 : Float64(h_min)
+    feat = kspace_features(stack, ωf, source_layer; h_min=dist, ρ_max=ρ_max, dims=2, N_φ_scan=N_φ_scan,
+                           target_decay=target_decay, kρ_cap=kρ_cap, scan=scan_poles, c_φ=c_φ, rtol=rtol)
+    kρ, wρ, panels = fixed_kρ_rule(feat; rtol=rtol, rule...)
+    Nφ = N_phi === nothing ? feat.N_φ : N_phi
+    φs, wφ = build_kphi_grid(Nφ)
+
+    chk = nothing
+    if check
+        d = stack[source_layer].d
+        pts = Tuple{Int,Float64,Float64}[]                 # (obs, z_obs local, z_src local)
+        for z in _check_depths(stack, source_layer, z_fracs, dist / 2)
+            zp = source_layer == 1 ? d - z : z
+            # z_obs in the obs layer's own frame, the source depth in the caller's (as in `_point_probes`)
+            zp + dist <= d && push!(pts, (source_layer, zp + dist, z))
+            zp - dist >= 0 && push!(pts, (source_layer, zp - dist, z))
+            source_layer > 1 && push!(pts, (source_layer - 1, stack[source_layer - 1].d - dist, z))
+            push!(pts, (source_layer + 1, min(dist, stack[source_layer + 1].d), z))
+        end
+        if terms === :scattered                            # the source plane itself
+            for z in _check_depths(stack, source_layer, z_fracs, dist / 2)
+                push!(pts, (source_layer, source_layer == 1 ? d - z : z, z))
+            end
+        end
+        lat = ρ_max > 0 ? [(0.0, 0.0), (ρ_max, 0.0), (-ρ_max, 0.0), (0.0, ρ_max)] : [(0.0, 0.0)]
+        obs_layers = sort(unique(p[1] for p in pts))
+        f(c) = [vec(closed_form_G(c, o, z, [zo], [x], [y]; terms=(o == source_layer ? terms : :all)))
+                for (o, zo, z) in pts for (x, y) in lat]
+        φn, wn = build_kphi_grid(Nφ)
+        run(kn, kw, φv) = chunked_2d(f, stack, ωf, source_layer, kn, kw, φv, wn; obs_layers=obs_layers, max_nodes=max_nodes)
+        v = run(kρ, wρ, φn)
+        k2, w2 = gl_rule(halve_panels(panels); order=get(rule, :order, 8), singular=feat.singular_lines)
+        # 2N_φ trapezoid = mean of the N_φ rule and the same rule shifted by π/N_φ (one N_φ cache at a time)
+        v2φ = 0.5 .* (v .+ run(kρ, wρ, φn .+ π / Nφ))
+        chk = (kρ=_rel_change(v, run(k2, w2, φn)), φ=_rel_change(v, v2φ))
+    end
+    info = (engine=:fixed, n_kρ=length(kρ), N_phi=Nφ, n_nodes=length(kρ) * Nφ, n_panels=length(panels), panels=panels,
+            tail_bound=feat.Kcut, features=feat, check=chk)
+    return kρ, wρ, φs, wφ, info
 end
 
 end

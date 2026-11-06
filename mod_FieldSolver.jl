@@ -41,6 +41,17 @@ function _cond2x2(A::SMatrix{2,2})
     return sqrt(λ1 / λ2)
 end
 
+# `_cond2x2` after scaling each column to unit norm. A transmission block through a
+# layer whose two modes decay at very different rates (a hyperbolic slab: e^{-21}
+# vs e^{-3.7} at 150 nm) has columns of very different size; that is a scaling,
+# not a near-singularity, and the 2×2 solve handles it. Only an equilibrated
+# condition number above 1/tol means the two modes are genuinely indistinct.
+function _cond2x2_eq(A::SMatrix{2,2})
+    n1 = sqrt(abs2(A[1,1]) + abs2(A[2,1])); n2 = sqrt(abs2(A[1,2]) + abs2(A[2,2]))
+    (n1 > 0 && n2 > 0 && isfinite(n1) && isfinite(n2)) || return Inf
+    return _cond2x2(A * Diagonal(SVector(1 / n1, 1 / n2)))
+end
+
 
 function _SProp(d::Real, Q::AbstractVector)
     φ1 = exp(im * Q[1] * d)
@@ -209,7 +220,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
             S11k = Sk[SOneTo(2), SOneTo(2)]; S12k = Sk[SOneTo(2), SVector(3,4)]
             S21k = Sk[SVector(3,4), SOneTo(2)]; S22k = Sk[SVector(3,4), SVector(3,4)]
 
-            if _cond2x2(S11k) > 1 / tol
+            if _cond2x2_eq(S11k) > 1 / tol
                 b₊ = Z
             else
                 b₊ = S11k \ (c₊ - S12k * c₋)
@@ -238,7 +249,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
             S11k = Sk[SOneTo(2), SOneTo(2)]; S12k = Sk[SOneTo(2), SVector(3,4)]
             S21k = Sk[SVector(3,4), SOneTo(2)]; S22k = Sk[SVector(3,4), SVector(3,4)]
 
-            if _cond2x2(S22k) > 1 / tol
+            if _cond2x2_eq(S22k) > 1 / tol
                 b₋ = Z
             else
                 b₋ = S22k \ (a₋ - S21k * a₊)

@@ -40,8 +40,8 @@ Two caches share this construction (§4.1):
     every `(kρ,φ)` node.
 
 Quadrature nodes are an INPUT here: `mod_ClosedFormGrid.jl` builds them
-(`point_kx_grid` for the 1D cache, `box_kρ_grid` for the 2D one), or pass any
-rule of your own.
+(`point_kx_grid` for the 1D cache; `point_kρ_grid_2d` and `box_kρ_grid` for the 2D
+one), or pass any rule of your own.
 """
 module CavityTransfer
 

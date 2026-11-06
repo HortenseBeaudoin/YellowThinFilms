@@ -1,33 +1,91 @@
 module KxGrid
 
-export branch_points, build_kphi_grid
+export branch_points, layer_light_lines, build_kphi_grid
 export thinnest_finite_layer, evanescent_umax, decay_cutoff, tail_bound
-export adaptive_kx_grid
+export adaptive_kx_grid, kronrod_rule, graded_panels, gl_rule, halve_panels
 
-import ..ModeSolver: AbstractLayer
+import ..ModeSolver: AbstractLayer, _layer_μ
 using FastGaussQuadrature
-using LinearAlgebra: norm
-using QuadGK: quadgk_segbuf, cachedrule
+using LinearAlgebra: norm, det, inv
+using StaticArrays
+using QuadGK: quadgk_segbuf, cachedrule, Segment
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Finds branch point to build grid around singularities, or avoid them.
-# The real-axis feature of a lossy layer sits at ω·Re(√ε), not ω·√(Re ε); layers
-# with Re ε ≤ 0 (metals, hyperbolic axes) have no cutoff on the real axis.
-# Diagonal entries only, φ-independent: see the convergence notes for the
-# in-plane-anisotropic and off-diagonal (gyrotropic) cases.
-function branch_points(stack::Vector{<:AbstractLayer}, ω::Float64)
-    ks = Float64[]
-    for lay in stack
-        for i in 1:3
-            ε = ComplexF64(lay.ϵ[i,i])
-            real(ε) > 0 && push!(ks, ω * real(sqrt(ε)))
-        end
+_tensor3(m) = SMatrix{3,3,ComplexF64}(ntuple(n -> ComplexF64(m[(n - 1) % 3 + 1, (n - 1) ÷ 3 + 1]), 9))
+
+"""
+    layer_light_lines(layer, ω, φ) -> Vector{Float64}
+
+In-plane wavenumbers `kρ` at which a plane wave travelling along `(cos φ, sin φ)`
+in `layer` has `k_z = 0`: the layer's light lines, i.e. the square-root branch
+points of its `k_z` (singular for the two semi-infinite layers, harmless kinks
+for the finite ones).
+
+With `k = kρ k̂` in the plane, Maxwell's equations give
+`det(ω²ε + kρ²·K̂ μ⁻¹ K̂) = 0`, `K̂` the cross-product matrix of `k̂`. `K̂` has rank
+2, so the determinant is a quadratic in `q = kρ²`; its coefficients are read off
+three evaluations. Each root `q` with `Re q > 0` gives the light line
+`kρ = Re √q` (the real-axis position of the branch point of a lossy medium,
+`ω·Re√ε` in the isotropic case). Roots with `Re q ≤ 0` (metals, the negative axis
+of a hyperbolic medium) have no light line on the real axis.
+
+Full ε and μ tensors: uniaxial gives `ω√(ε_t μ_t)` (TE) and `ω√(ε_z μ_t)` (TM,
+for isotropic μ), biaxial and tilted media depend on φ, gyrotropic off-diagonal
+terms enter the determinant. The light lines are even in `k̂`, so `φ` and `φ + π`
+agree.
+"""
+function layer_light_lines(layer::AbstractLayer, ω::Real, φ::Real)
+    ε = _tensor3(layer.ϵ); μ = _tensor3(_layer_μ(layer))
+    c, s = cos(φ), sin(φ)
+    K = @SMatrix ComplexF64[0 0 s; 0 0 -c; -s c 0]
+    M = K * inv(μ) * K
+    A = Float64(ω)^2 * ε
+    sc = Float64(ω)^2 * max(maximum(abs, ε) * maximum(abs, μ), eps())
+    p0 = det(A); p1 = det(A + sc * M); p2 = det(A + 2sc * M)
+    c2 = (p2 - 2p1 + p0) / (2sc^2); c1 = (p1 - p0) / sc - c2 * sc; c0 = p0
+    roots = if abs(c2) * sc^2 <= 1e-12 * (abs(c1) * sc + abs(c0))
+        abs(c1) > 0 ? ComplexF64[-c0 / c1] : ComplexF64[]
+    else
+        D = c1^2 - 4c2 * c0
+        Δ = abs(D) <= 1e-10 * abs(c1)^2 ? zero(D) : sqrt(D)       # double root (isotropic, TE = TM)
+        ComplexF64[(-c1 + Δ) / (2c2), (-c1 - Δ) / (2c2)]
     end
-    return sort(unique(ks))
+    # a double root (isotropic: TE = TM) splits by ~√eps under round-off: merge
+    return _dedup(sort!([real(sqrt(q)) for q in roots if real(q) > 0]); rtol=1e-7)
+end
+
+"""
+    branch_points(stack, ω; φs=(0.0, π/2)) -> Vector{Float64}
+
+Sorted, de-duplicated light lines (`layer_light_lines`) of every layer, at every
+in-plane direction in `φs`. For an isotropic/uniaxial stack with isotropic μ this
+is `ω·Re√ε_ii` over the diagonal entries with a light line, as before; it now
+also includes μ (`ω·Re√(ε μ)`), and handles biaxial, tilted and gyrotropic
+tensors through the full determinant. A biaxial or tilted layer's light line
+moves with φ: the default `φs` gives its values along the two axes; pass the
+φ nodes of a 2D grid to get all of them.
+
+The poles are NOT here: `KSpaceFeatures.real_axis_poles` finds them.
+"""
+function branch_points(stack::Vector{<:AbstractLayer}, ω::Real; φs=(0.0, π / 2))
+    ks = Float64[]
+    for lay in stack, φ in φs
+        append!(ks, layer_light_lines(lay, ω, φ))
+    end
+    return _dedup(sort!(ks))
+end
+
+# merge values closer than `rtol` (relative), keeping the first of each cluster
+function _dedup(ks::Vector{Float64}; rtol::Float64=1e-9)
+    out = Float64[]
+    for k in ks
+        (isempty(out) || k - out[end] > rtol * max(abs(k), 1e-300)) && push!(out, k)
+    end
+    return out
 end
 
 
@@ -45,8 +103,8 @@ decay_cutoff(h::Real; target_decay::Real=25.0) = Float64(target_decay) / Float64
 """
     tail_bound(K, kmax; kρ_cap=Inf, kx_ratio_min=80.0) -> Float64
 
-Upper kρ bound of the tail from a geometry-driven cutoff `K` (`decay_cutoff`,
-`box_tail_cutoff`): at least `kx_ratio_min·kmax` (keeps the cut well past the
+Cut-off of the finite kρ band (`adaptive_kx_grid`'s `kcut`, the fixed rule's last
+break) from a geometry-driven cutoff `K` (`decay_cutoff`, `box_tail_cutoff`): at least `kx_ratio_min·kmax` (keeps the cut well past the
 propagating band; 80·kmax is the fixed tail every grid used before the cutoff was
 tied to the geometry), at most `kρ_cap` (cost ceiling). The ceiling wins over the
 floor, so a caller's explicit `kρ_cap` (quick runs, rank studies below the pixel
@@ -58,6 +116,9 @@ tail_bound(K::Real, kmax::Real; kρ_cap::Real=Inf, kx_ratio_min::Real=80.0) =
 
 """
     evanescent_umax(kmax, Leff; target_decay=25.0, kx_ratio_max=80.0)
+
+(Kept for `mod_Dipz_SemiAnalytical.jl`'s fixed reference grid; the live grids no
+longer use a cosh-substituted tail.)
 
 Effective length scale that sets the decay. In u, for change of variables kρ = kmax * cosh(u), 
 the tail decays as exp(-kmax * Leff * sinh(u)).
@@ -96,7 +157,6 @@ function thinnest_finite_layer(stack::Vector{<:AbstractLayer})
 end
 
 
-#TODO Still usefull ??? Probe adapted ? 
 """
     _kronrod_reference_rule(x, w, wg) -> (ξ, wt)
 
@@ -136,7 +196,6 @@ function _kronrod_reference_rule(x::Vector{Float64}, w::Vector{Float64}, wg::Vec
 end
 
 
-#TODO Still usefull ??? Probe adapted ? 
 """
     _panels_to_nodes(segs, x, w, wg) -> (nodes, weights)
 
@@ -167,279 +226,166 @@ function _panels_to_nodes(segs, x::Vector{Float64}, w::Vector{Float64}, wg::Vect
 end
 
 
-#TODO Still usefull ??? Probe adapted ? 
-"""
-    _tail_t_cap(kmax, kx_ratio_max) -> t_cap
-
-Inverts the tail substitution `kρ = kmax + t/(1-t)` to find the `t ∈ (0,1)`
-corresponding to `kρ = kmax*kx_ratio_max`, so `adaptive_kx_grid` can
-integrate the semi-infinite tail over `t ∈ [0,t_cap]` instead of the full
-`[0,1)` -- see `adaptive_kx_grid`'s own docstring (`kx_ratio_max` paragraph)
-for why this cap is now applied unconditionally, not just on stall.
-"""
-function _tail_t_cap(kmax::Float64, kx_ratio_max::Float64)
-    A = kmax * (max(kx_ratio_max, 1.0 + 1e-10) - 1.0)
-    return A / (1.0 + A)
-end
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Core functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    adaptive_kx_grid(fs, kbreaks; rtol=1e-6, atol=0.0, kr_order=7,
-                     maxevals=10_000, Leff=1.0, fallback_N=250, tail_stall=:keep,
-                     target_decay=25.0, kx_ratio_max=80.0, warn_stall=true)
-        -> (kx_nodes, wt_nodes, info)
+    adaptive_kx_grid(fs, kbreaks; kcut, rtol=1e-6, atol=0.0, kr_order=7,
+                     maxevals=10_000, warn_stall=true) -> (kx_nodes, wt_nodes, info)
 
-Error-controlled replacement for the old fixed `N_prop`/`N_band`/`N_eva` node
-placement (Part 2 of the NUFFT/adaptive-quadrature handoff) -- that fixed grid
-(formerly `build_kx_grid`, this module) has since moved to
-`mod_Dipz_SemiAnalytical.jl` (2026-09-18), kept only as the semi-analytical
-ground-truth comparison's own grid, since this function superseded it
-everywhere else in the live pipeline; `evanescent_umax`/`_evanescent_band_nodes`
-stay here for this function's optional `tail_stall=:fallback` branch (below).
-`fs::Vector` holds one or more independent probe integrands, each
-`f(kρ::Float64)` a caller-supplied PHYSICAL integrand -- in this project
-always a full per-node reciprocal-space solve's contribution to some scalar-
-or vector-valued probe quantity (see `mod_ClosedFormGrid.jl`'s probes); `kbreaks` the sorted,
-strictly-positive branch points (`branch_points(stack, ω)`).
+h-adaptive Gauss–Kronrod rule on the finite band `[0, kcut]`, converged for every
+probe integrand in `fs` (each `f(kρ)`, scalar or vector valued) and merged into
+ONE node/weight rule.
 
-Converges every probe in `fs` over the SAME domain and returns ONE merged
-node/weight rule, correctly -- i.e. NOT by concatenating each probe's own
-complete `(nodes,weights)` rule (which double/multiply-counts the shared
-domain, silently N-tupling any well-resolved quantity) and NOT by stacking
-every probe into one combined vector integrand for a single stacked-vector
-adaptive-quadrature run either (which technically avoids double-counting,
-but introduces a DIFFERENT, subtler bug: that stacked run's stopping test
-compares error against the NORM of the whole stacked vector, so a probe with
-much SMALLER natural magnitude than another can have its own relative error
-hidden entirely inside a combined tolerance dominated by the larger probe --
-confirmed directly: stacking `_radial_probe_value`'s ρ=0 and ρ=ρ_max
-outputs, whose magnitudes differ by orders of magnitude near a resonance,
-converged the COMBINED norm to `rtol` while the smaller-magnitude probe's
-own value was still off by >100%).
+`kcut` is the geometric cut-off (`decay_cutoff`/`tail_bound`): there is no
+semi-infinite tail any more. Content past `kcut` has decayed by `target_decay`
+e-folds by construction, and every pole below `kcut` lies inside the band, where
+the refinement sees it. (Until 2026-11 the band stopped at the largest light line
+and the rest went through a `kρ = kmax + t/(1−t)` tail; in hyperbolic and metallic
+stacks every polariton pole landed in that tail, which stalled -- see
+`HANDOUT_quadrature_hyperbolic_gyrotropic.md` §2a.)
 
-The fix used here: run each probe's OWN `QuadGK.quadgk_segbuf` h-adaptive
-Gauss-Kronrod refinement completely independently (so each probe is judged
-against `rtol` scaled by ITS OWN magnitude -- exactly right, no cross-probe
-scale bias), on:
-  - the finite bands `(0,k1),(k1,k2),...,(k_{n-1},kmax)`;
-  - the semi-infinite tail `(kmax,∞)`, via the explicit substitution
-    `kρ = kmax + t/(1-t)`, `t ∈ [0,1)`, Jacobian `dkρ/dt = 1/(1-t)^2` --
-    written out here rather than relying on QuadGK's own (unexported)
-    infinite-interval transform, so the inverse map back to kρ-space nodes
-    and weights is exact and auditable rather than reverse-engineered from
-    QuadGK internals.
+`kbreaks` seeds the initial partition (any order, any number; values outside
+`(0, kcut)` are dropped): light lines, pole and band edges, and the log-spaced
+seeds that `KSpaceFeatures.kspace_features` returns. The seeds are passed to
+QuadGK as its starting segments (`eval_segbuf`), so their number costs no
+compilation.
 
-Then, instead of keeping each probe's own node/weight rule, only the PANEL
-BOUNDARIES each probe's refinement settled on are collected, unioned
-(sorted, deduplicated) across all probes, and ONE Kronrod rule is placed on
-that merged partition (`_panels_to_nodes`, reconstructed from
-`QuadGK.cachedrule(Float64, kr_order)`'s packed `(x,w,wg)` via
-`_kronrod_reference_rule` -- `quadgk_segbuf` itself only returns panel
-boundaries plus integral/error estimates, `QuadGK.Segment` storing just `a`,
-`b`, `I`, `E`, not an explicit node list). This is mathematically safe: the
-merged partition is a common refinement of every individual probe's own
-accepted partition (each probe's own boundaries are a SUBSET of the union),
-so the merged rule is at least as fine -- hence at least as accurate -- for
-every probe as that probe's own independently-converged rule, while still
-being exactly ONE quadrature rule for the shared domain (no multiple
-counting, since there is exactly one partition and one rule placed on it).
+Merging. Each probe is refined on its own (its own `rtol` scale: stacking probes
+into one vector integrand lets a small probe hide inside a large one's norm),
+then the union of every probe's accepted panel boundaries is taken and QuadGK's
+OWN Kronrod rule (`_kronrod_reference_rule`) is placed on the merged partition.
+The merged partition refines every probe's own, so each probe is integrated at
+least as accurately as by its own run, and there is a single rule (no double
+counting). The exact Kronrod rule, not a fresh Gauss–Legendre one, is required:
+a panel judged converged at QuadGK's sample points can hide a narrow peak
+between the nodes of a different rule.
 
-Reusing QuadGK's OWN exact Kronrod rule (not a fresh, differently-noded rule
-of the same order) is not merely convenient, it is necessary for
-correctness: an EARLIER version of this module placed a fresh,
-independently-chosen Gauss-Legendre rule on each accepted panel instead,
-reasoning that "a panel already fine enough for Kronrod is fine enough for
-any comparable rule" -- this is FALSE whenever the integrand has structure
-narrower than the panel that happens to fall between the fresh rule's node
-positions (a Fabry-Perot-type resonance in a layered-media reflection
-coefficient, say): the panel was correctly judged converged AT QUADGK'S OWN
-SAMPLE POINTS, but a differently-noded rule can completely miss that same
-structure, giving a frozen node set that reproduces nothing like the
-converged value. Reusing QuadGK's exact rule makes "the frozen nodes
-reproduce the converged integral" a mathematical identity (the same weighted
-sum, not merely similar), not an assumption -- confirmed empirically during
-this handoff's own development (see the module's validation script's
-revision history) and guarded ongoing by Part 2's validation harness
-(re-summing the frozen nodes through the real per-pixel pipeline and
-comparing to the semi-analytical ground truth).
+A probe that does not reach `(rtol, atol)` within `maxevals` is flagged stalled
+(`info.per_probe[i].stalled`; warned unless `warn_stall=false`); its panels are
+kept as far as it got.
 
-Tail stall (a probe's TAIL integration hits `maxevals` without reaching
-`(rtol,atol)` -- the oscillatory-large-lateral-offset "hard case" the handoff
-calls out) is handled by `tail_stall`, and always warned about (whatever
-`warn_stall`, which only silences the finite-band warnings):
-  - `:keep` (default, 2026-11-03): treated like a finite-band stall -- the tail
-    partition is still the union of every probe's panels, the stalled probes'
-    included as far as they got. The converged probes have already placed panels
-    on any narrow tail structure, so nothing they resolved is thrown away.
-  - `:fallback` (the previous behaviour): the tail is replaced -- for ALL probes,
-    one shared node set -- by this module's fixed cosh-substitution evanescent
-    band (`evanescent_umax`/`_evanescent_band_nodes`, `fallback_N` nodes,
-    `Leff` = the caller's source-to-interface distance) past `kmax`.
-Why `:keep` became the default: `branch_points` only marks layers with
-Re ε > 0, so in a stack with a hyperbolic (or metallic) layer every polariton
-pole sits in the "tail", far past `kmax` (ZrS₂ on Au under Si, 250 cm⁻¹: poles at
-9–186 × kmax, widths ~1e-4 nm⁻¹). There 4 of 100 probes still stalled at
-maxevals = 1e6, and `:fallback`'s 250 cosh nodes (Δk ≈ 4 % of k) put the slab
-field 23 % off a 49k-node Gauss–Legendre reference, whatever `maxevals`.
-
-`kx_ratio_max` (2026-08-21 fix, found during Part 3's multi-dipole biaxial
-validation -- not merely the stall-fallback's own cap anymore): ALWAYS caps
-the semi-infinite tail's substitution domain to `kρ ∈ [kmax, kmax*kx_ratio_max]`
-(via `t ∈ [0, t_cap]` in the `kρ = kmax + t/(1-t)` substitution), not just
-when the tail integration stalls. Previously the CONVERGED tail was
-integrated over the full `t ∈ [0,1)`, i.e. `kρ → ∞`; QuadGK's coarsest
-Kronrod rule on that whole interval already samples `t` values extremely
-close to 1 (its outermost node, before any subdivision), so a probe that
-happens to converge WITHOUT needing subdivision there can still return nodes
-at astronomically large kρ (confirmed directly: a probe converging on its
-very first Kronrod pass on `[0,1)` returned nodes ~100-1000x `kmax`). This is
-harmless for a SINGLE dipole (`Modal_amp`/`Modal_amp_profile` evaluated once,
-per-node contributions correctly underflow toward zero at extreme kρ), but
-CORRUPTS the multi-dipole within-layer path (`Modal_amp_profile` batching
-several sources at DIFFERENT z): the forward/backward mode terms for two
-sources separated by `Δz` involve `exp(±kz·Δz)`-type factors that stay
-FINITE (not NaN/Inf, so `_finite_or_zero`'s guard does not catch it) but lose
-essentially all precision to catastrophic cancellation once `kz·Δz` gets
-anywhere near Float64's ~709 overflow threshold -- confirmed directly: two
-co-layer dipoles at different z, batched through an adaptive grid whose tail
-was capped only on stall, came back >50% wrong, entirely inside the shared
-source layer's own rows, while the SAME two dipoles at the SAME z (Δz=0, no
-cancellation needed) or a SINGLE dipole through the identical grid matched
-the fixed-grid answer to the expected accuracy level. `kx_ratio_max=80`
-(same default already used by `evanescent_umax`'s fallback and by
-`mod_Dipz_SemiAnalytical.jl`'s `build_kx_grid`, both already cross-validated
-against analytic/semi-analytical ground truth in Part 2) is comfortably past
-`target_decay=25` e-foldings of evanescent decay, so capping the converged
-tail there costs no real accuracy -- content beyond it is already many
-orders of magnitude below any reasonable `rtol` for the physical integral,
-while removing it is what keeps the multi-source formula numerically sane.
-(That cancellation is the `Modal_amp_profile` path's; the closed-form path forms
-only decaying exponentials, clamped in `_phase`.) The closed-form grid builders
-(`mod_ClosedFormGrid.jl`) no longer pass a fixed 80: they set the cap from the
-geometry with `tail_bound` (`decay_cutoff` for an `e^{−kρh}` tail,
-`box_tail_cutoff` inside a box's slab), floored at 80·kmax and capped by `kρ_cap`.
-
-`min_panel_width` (Part C, uniform-extended-source handoff): the FINEST
-panel QuadGK settled on among the finite bands, off the MERGED
-(union-of-probes) finite-band partition -- i.e. the narrowest feature of the
-integrand this adaptive refinement actually resolved (a near-real
-guided-mode pole, a branch-point cusp). Exposed so a fixed-Δkx uniform grid
-can be judged adequate against it (`Δkx` vs. this width) without re-running
-the adaptive probe a second time just to ask "how fine did you need to go".
-Finite bands only (the merged `fin_segs`, not the evanescent tail) --
-`kbreaks` spans every real-axis branch point (`branch_points`' ε-based
-cutoffs), and guided-mode poles sit below the largest of them, so that is
-where a narrow feature would show up as a small accepted panel. Note that
-`kbreaks` does NOT locate poles: nothing here finds them, the adaptive
-refinement only resolves them by brute force once loss moves them off the
-real axis (a lossless stack puts them on the path and the finite bands stall).
-
-`info` reports `(n_panels_fin, n_nodes, per_probe_fin, per_probe_tail,
-any_tail_stalled, min_panel_width)` (`warn_stall=false` silences the per-probe
-finite-band stall warning, for a caller that reports stalls itself): `per_probe_fin`/`per_probe_tail` are
-per-probe `(E, stalled)` NamedTuples (achieved error estimate and whether
-that probe's own refinement stalled), so a caller can tell WHICH probe (if
-any) drove the final node count or stalled -- `any_tail_stalled` is the OR
-of every probe's own tail-stall flag.
+`info`: `n_panels`, `n_nodes`, `per_probe` (`(E, stalled)` per probe),
+`any_stalled`, `min_panel_width`, `kcut`, `panels` (the merged partition).
 """
-function adaptive_kx_grid(fs::Vector, kbreaks::Vector{Float64};
+function adaptive_kx_grid(fs::Vector, kbreaks::AbstractVector{<:Real}; kcut::Real,
                           rtol::Float64=1e-6, atol::Float64=0.0,
-                          kr_order::Int=7, maxevals::Int=10_000,
-                          Leff::Float64=1.0, fallback_N::Int=250, tail_stall::Symbol=:keep,
-                          target_decay::Float64=25.0, kx_ratio_max::Float64=80.0, warn_stall::Bool=true)
-    isempty(kbreaks) && error("adaptive_kx_grid: kbreaks cannot be empty")
+                          kr_order::Int=7, maxevals::Int=10_000, warn_stall::Bool=true)
     isempty(fs) && error("adaptive_kx_grid: fs cannot be empty")
-    kmax = kbreaks[end]
+    kc = Float64(kcut)
+    kc > 0 || error("adaptive_kx_grid: kcut must be positive (got $kcut)")
     x, w, wg = cachedrule(Float64, kr_order)
 
-    fin_breaks = Set{Float64}(kbreaks)
-    push!(fin_breaks, 0.0)
-    per_probe_fin = Vector{NamedTuple}(undef, length(fs))
-    Ifin_by_probe = Vector{Any}(undef, length(fs))
+    pts = sort!(unique!(vcat(0.0, [Float64(k) for k in kbreaks if 0 < k < kc], kc)))
+    seeds = [Segment(pts[i], pts[i+1], 0.0, 0.0) for i in 1:length(pts)-1]
+
+    breaks = Set{Float64}(pts)
+    per_probe = Vector{NamedTuple}(undef, length(fs))
     for (i, f) in enumerate(fs)
-        Ifin, Efin, segfin = quadgk_segbuf(f, 0.0, kbreaks...; rtol=rtol, atol=atol, order=kr_order, maxevals=maxevals)
-        stalled = Efin > max(atol, rtol * norm(Ifin))
-        stalled && warn_stall && @warn "adaptive_kx_grid: probe $i's finite bands did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals (achieved error estimate $Efin) -- see this function's own docstring's note on lossless poles."
-        for s in segfin
-            push!(fin_breaks, Float64(s.a))
-            push!(fin_breaks, Float64(s.b))
+        I, E, segs = quadgk_segbuf(f, 0.0, kc; eval_segbuf=seeds, rtol=rtol, atol=atol,
+                                   order=kr_order, maxevals=maxevals)
+        stalled = E > max(atol, rtol * norm(I))
+        stalled && warn_stall && @warn "adaptive_kx_grid: probe $i did not reach (rtol=$rtol, atol=$atol) within " *
+            "maxevals=$maxevals (error estimate $E); its panels are kept as far as it got."
+        for s in segs
+            push!(breaks, Float64(s.a)); push!(breaks, Float64(s.b))
         end
-        per_probe_fin[i] = (E=Efin, stalled=stalled)
-        Ifin_by_probe[i] = Ifin
+        per_probe[i] = (E=E, stalled=stalled)
     end
-    fin_pts = sort(collect(fin_breaks))
-    fin_segs = [(a=fin_pts[i], b=fin_pts[i+1]) for i in 1:length(fin_pts)-1]
-    nodes_fin, wts_fin = _panels_to_nodes(fin_segs, x, w, wg)
-
-    t_cap = _tail_t_cap(kmax, kx_ratio_max)
-    t_breaks = Set{Float64}((0.0, t_cap))
-    per_probe_tail = Vector{NamedTuple}(undef, length(fs))
-    any_tail_stalled = false
-    for (i, f) in enumerate(fs)
-        g(t) = f(kmax + t / (1.0 - t)) * (1.0 / (1.0 - t))^2
-        # 2026-09-08 (voxel-path speedup pass, tail-stall investigation): the
-        # tail is, by construction, the ALREADY-DECAYING correction past
-        # `kmax` -- typically small relative to this SAME probe's own
-        # finite/propagating band (`Ifin_by_probe[i]`, just computed above).
-        # Demanding `atol=0` (pure RELATIVE `rtol` on the tail's OWN, possibly
-        # tiny, value) asks QuadGK to resolve that small correction to a far
-        # tighter ABSOLUTE precision than the physical problem needs, and can
-        # chase precision past the noise floor of evaluating `f` itself (a
-        # full modal/Redheffer solve, not noise-free arithmetic) -- a classic
-        # pure-relative-tolerance pathology (this project confirmed the tail
-        # stall was real, not just slow -- see the project status memory),
-        # not necessarily a sign of genuinely unresolvable content. Anchoring
-        # the tail's own `atol` to `rtol * |this probe's finite-band value|`
-        # instead says "resolve the tail correction to the SAME absolute
-        # precision already demanded of this probe's dominant, finite-band
-        # part" -- composes with a caller-supplied `atol` via `max`, never
-        # loosens below it.
-        atol_tail = max(atol, rtol * norm(Ifin_by_probe[i]))
-        Itail, Etail, segtail = quadgk_segbuf(g, 0.0, t_cap; rtol=rtol, atol=atol_tail, order=kr_order, maxevals=maxevals)
-        stalled = Etail > max(atol_tail, rtol * norm(Itail))
-        any_tail_stalled |= stalled
-        for s in segtail
-            push!(t_breaks, Float64(s.a))
-            push!(t_breaks, Float64(s.b))
-        end
-        per_probe_tail[i] = (E=Etail, stalled=stalled)
-    end
-
-    tail_stall in (:keep, :fallback) || error("adaptive_kx_grid: tail_stall must be :keep or :fallback")
-    if any_tail_stalled                     # always: callers silencing `warn_stall` (box_kρ_grid) do not report tail stalls
-        nst = count(p -> p.stalled, per_probe_tail)
-        @warn "adaptive_kx_grid: $nst of $(length(fs)) probes' evanescent tail past kmax=$kmax did not reach (rtol=$rtol, atol=$atol) within maxevals=$maxevals -- " *
-              (tail_stall === :keep ? "keeping the union of every probe's tail panels (stalled probes' panels as far as they got)." :
-                                      "falling back to the fixed cosh-substitution evanescent band (Leff=$Leff, fallback_N=$fallback_N) for ALL probes.")
-    end
-    if any_tail_stalled && tail_stall === :fallback
-        umax = evanescent_umax(kmax, Leff; target_decay=target_decay, kx_ratio_max=kx_ratio_max)
-        nodes_tail, wts_tail = _evanescent_band_nodes(kmax, umax, fallback_N)
-    else
-        t_pts = sort(collect(t_breaks))
-        t_segs = [(a=t_pts[i], b=t_pts[i+1]) for i in 1:length(t_pts)-1]
-        nodes_t, wts_t = _panels_to_nodes(t_segs, x, w, wg)
-        nodes_tail = @. kmax + nodes_t / (1.0 - nodes_t)
-        wts_tail   = @. wts_t / (1.0 - nodes_t)^2
-    end
-
-    kx_nodes = vcat(nodes_fin, nodes_tail)
-    wt_nodes = vcat(wts_fin, wts_tail)
-
-    # `min_panel_width` -- see this function's own docstring; computed off
-    # the merged (union-of-probes) finite-band partition `fin_segs`.
-    min_panel_width = isempty(fin_segs) ? Inf : minimum(s.b - s.a for s in fin_segs)
-
-    info = (n_panels_fin=length(fin_segs), n_nodes=length(kx_nodes),
-            per_probe_fin=per_probe_fin, per_probe_tail=per_probe_tail,
-            any_tail_stalled=any_tail_stalled, min_panel_width=min_panel_width)
+    bp = sort!(collect(breaks))
+    segs = [(a=bp[i], b=bp[i+1]) for i in 1:length(bp)-1]
+    kx_nodes, wt_nodes = _panels_to_nodes(segs, x, w, wg)
+    info = (n_panels=length(segs), n_nodes=length(kx_nodes), per_probe=per_probe,
+            any_stalled=any(p -> p.stalled, per_probe),
+            min_panel_width=isempty(segs) ? Inf : minimum(s.b - s.a for s in segs), kcut=kc,
+            panels=[(s.a, s.b) for s in segs])
     return kx_nodes, wt_nodes, info
 end
 
+"""
+    kronrod_rule(panels; kr_order=7) -> (nodes, weights)
+
+QuadGK's Kronrod rule of order `kr_order` on each panel (the rule
+`adaptive_kx_grid` returns, rebuilt from `info.panels`; with
+`halve_panels(info.panels)`, the self-check's refined rule).
+"""
+function kronrod_rule(panels::AbstractVector{<:NTuple{2,Real}}; kr_order::Int=7)
+    x, w, wg = cachedrule(Float64, kr_order)
+    return _panels_to_nodes([(a=Float64(a), b=Float64(b)) for (a, b) in panels], x, w, wg)
+end
+
+
+"""
+    graded_panels(breaks, width; α=0.5, max_panels=10^7) -> Vector{NTuple{2,Float64}}
+
+Partition of `[breaks[1], breaks[end]]` into panels that end on every break and
+whose width never exceeds the local target `width(k)` anywhere inside them.
+
+`width` must be positive and Lipschitz with constant ≤ `α` (true for the width
+functions built by `KSpaceFeatures`: every term is either constant, `r·k` with
+`r ≤ α`, or `max(w₀, α·dist(k, feature))`). Then a step `s = width(a)/(1+α)` from
+`a` satisfies `s ≤ width(k)` on all of `[a, a+s]`, so marching from left to right
+grades geometrically onto features ahead as well as behind.
+"""
+function graded_panels(breaks::AbstractVector{<:Real}, width; α::Real=0.5, max_panels::Int=10^7)
+    bs = sort!(unique!(collect(Float64, breaks)))
+    panels = NTuple{2,Float64}[]
+    for i in 1:length(bs)-1
+        a, b = bs[i], bs[i+1]
+        x = a
+        while x < b
+            s = width(x) / (1 + α)
+            s > 0 || error("graded_panels: non-positive width $(s) at k=$x")
+            y = x + s >= b - 1e-14 * abs(b) ? b : x + s
+            push!(panels, (x, y))
+            length(panels) > max_panels && error("graded_panels: more than $max_panels panels; check the width function")
+            x = y
+        end
+    end
+    return panels
+end
+
+"""
+    gl_rule(panels; order=8, singular=Float64[]) -> (nodes, weights)
+
+Composite Gauss–Legendre rule, `order` nodes on each panel. A panel with an end
+exactly on a value in `singular` (a `k_z` branch point `L`, where the integrand
+behaves like `g(kρ)/√|kρ − L|` plus a smooth part) is integrated in `u` with
+`kρ = L ∓ u²`, `dkρ = 2u du`: both parts become smooth in `u`, so Gauss–Legendre
+converges geometrically on that panel instead of with the `√(width)` error of a
+panel ending on the singularity. The nodes stay at a relative distance
+`≳ 1e-4 × (panel width)` from `L` -- the general Berreman `eigen` path returns
+garbage within ~1e-14 of a light line, which deep geometric grading would hit.
+"""
+function gl_rule(panels::AbstractVector{<:NTuple{2,Real}}; order::Int=8, singular=Float64[])
+    ξ, wξ = gausslegendre(order)
+    S = Set{Float64}(Float64.(singular))
+    n = length(panels)
+    nodes = Vector{Float64}(undef, n * order); wts = similar(nodes)
+    idx = 1
+    for (a, b) in panels
+        a, b = Float64(a), Float64(b)
+        L, sg = a in S ? (a, 1.0) : (b in S ? (b, -1.0) : (NaN, 0.0))
+        if sg == 0
+            h = 0.5 * (b - a); c = 0.5 * (a + b)
+            for j in 1:order
+                nodes[idx] = c + h * ξ[j]; wts[idx] = h * wξ[j]; idx += 1
+            end
+        else                                   # kρ = L + sg·u², u ∈ [0, √(b − a)]
+            U = sqrt(b - a)
+            for j in 1:order
+                u = 0.5U * (1 + ξ[j])
+                nodes[idx] = L + sg * u^2; wts[idx] = 0.5U * wξ[j] * 2u; idx += 1
+            end
+        end
+    end
+    return nodes, wts
+end
+
+"`panels` with every panel split in two (the self-check's refined rule)."
+halve_panels(panels::AbstractVector{<:NTuple{2,Real}}) =
+    [p for (a, b) in panels for p in ((Float64(a), (a + b) / 2), ((a + b) / 2, Float64(b)))]
 
 function build_kphi_grid(N_phi::Int)
     phi_nodes   = [2π * p / N_phi for p in 0:(N_phi - 1)]

@@ -187,7 +187,7 @@ for sz in size_order, δ in losses, (name, mk) in stacks
     end
     op, t_cache, t_build = build_layer_operator_grouped(st, ω, src, groups, g, zsrc, zobs; node_budget=NODE_BUDGET,
                                                         skeleton=SKELETON, skeleton_tol=SK_TOL, kw...)
-    nstall = count(i -> i.any_tail_stalled, ginfo.per_group)     # > 0: an adaptive tail stalled (panels kept as far as it got)
+    nstall = count(i -> i.any_stalled, ginfo.per_group)           # > 0: an adaptive band stalled (panels kept as far as it got)
 
     P1 = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3); P1[g.Nx ÷ 2, g.Ny ÷ 2, (Ns + 1) ÷ 2, :] .= 1   # one source
     PN = zeros(ComplexF64, g.Nx, g.Ny, Ns, 3)                                               # one per plane
@@ -213,7 +213,7 @@ for sz in size_order, δ in losses, (name, mk) in stacks
                 Dates.format(now(), "yyyy-mm-ddTHH:MM"), Threads.nthreads(), strip(name), δ, sz, g.Nx, g.Ny,
                 Ns, nkρ, nφ, nstall, t_grid, t_cache, t_build, t_pre, mb(op), t1, tN, tA, join(blocks, " "))
     end
-    nstall > 0 && (skipped[(name, δ)] = "tail stalled")
+    nstall > 0 && (skipped[(name, δ)] = "band stalled")
 end
 println("\n! = at least one adaptive tail stalled (panels kept as far as it got, not converged)")
 println("rows appended to ", relpath(csv, @__DIR__))
