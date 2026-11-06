@@ -276,7 +276,7 @@ not symmetric under `φ → φ + π`).
 
 `Kcut` overrides the geometric cut-off (the box grid has its own, algebraic one);
 `φ_scan` overrides the scanned directions (a φ group of `box_kρ_grid_grouped`
-scans its own φ).
+scans its own φ), except on an azimuthally symmetric stack, which scans φ = 0 only.
 
 Fields: `classes`, `light_lines` (all layers, every scanned φ), `singular_lines`
 (semi-infinite layers only), `kmax`, `Kcut`, `h_min`, `ρ_max`, `poles`,
@@ -297,10 +297,10 @@ function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer:
     classes = [material_class(l) for l in stack]
     sym = _is_azimuthally_symmetric_stack(stack)
     diag = all(l -> (e = _tensor3(l.ϵ); m = _tensor3(_layer_μ(l)); all(iszero(e[i, j]) && iszero(m[i, j]) for i in 1:3, j in 1:3 if i != j)), stack)
-    φ_scan, merge_rel = if φ_scan !== nothing
-        sort(collect(Float64, φ_scan)), (length(φ_scan) > 1 ? minimum(diff(sort(collect(Float64, φ_scan)))) : 0.0)
-    elseif dims == 1 || sym
+    φ_scan, merge_rel = if dims == 1 || sym                 # every φ has the same poles
         [0.0], 0.0
+    elseif φ_scan !== nothing
+        sort(collect(Float64, φ_scan)), (length(φ_scan) > 1 ? minimum(diff(sort(collect(Float64, φ_scan)))) : 0.0)
     elseif diag
         collect(range(0.0, π / 2; length=max(2, N_φ_scan ÷ 4 + 1))), (π / 2) / max(1, N_φ_scan ÷ 4)
     else

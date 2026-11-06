@@ -323,12 +323,21 @@ Implements `HANDOUT_quadrature_hyperbolic_gyrotropic.md` (P1–P5) as one design
 | [M] MoO₃ 72° bilayer, 2D, ±0.3 µm | 2048 kρ × 682 φ | hand rule (2⁻⁴⁰) 2.1e-10, 2N_φ 2.6e-15 |
 | [C] `check=true` in 2D | — | 1.3e-12 / 1.5e-12 |
 
-  Older suites (Point, Grid, Box, Operator, Assembly, Foundation) all PASS on the final code. The adaptive grids got larger and more accurate from the graded seeds: Grid [P] at rtol 1e-6 1185 → 2430 nodes, 9.3e-11 → 1.1e-11; box at rtol 1e-4 8910 → 9735 kρ, self slab 9.5e-9 → 1.0e-11, but build 10 s → 34 s (the pole scan and ~60 extra seeds per light line × probes). The box seeds could be graded less deeply if that cost matters.
+  Older suites (Point, Grid, Box, Operator, Assembly, Foundation) all PASS on the final code. The adaptive grids got larger and more accurate from the graded seeds: Grid [P] at rtol 1e-6 1185 → 2430 nodes, 9.3e-11 → 1.1e-11; box at rtol 1e-4 8910 → 9735 kρ, self slab 9.5e-9 → 1.0e-11, build time unchanged (10 s; 34 s before the symmetric-stack scan fix below).
+- **Box sources** (`Gz_ClosedForm_BoxQuadrature_Validation.jl`, new, ~4 min): `box_kρ_grid` at rtol 1e-3 / 1e-4 vs a dense Gauss–Legendre reference (124k kρ, u² substitution at the light lines, self-converged to 5e-15 by halving) on the same φ grid and cut-off (`kρ_cap` = 150, small so the references fit in memory). All PASS, worst per row group (self slab / neighbour / across interface):
+
+| Case | Grid | rtol 1e-3 | rtol 1e-4 |
+|---|---|---|---|
+| [A] box in a hyperbolic slab (2, 2, −3.2) on glass | 2.4k kρ × 32 φ | 2.2e-8 | 9.3e-11 |
+| [B] box in air 0.1 above a hyperbolic slab on a metal (all poles past the light lines) | 8.6k × 32 | 1.3e-9 | 1.3e-9 |
+| [C] box in a gyrotropic hyperbolic slab, full φ / grouped | 13.5k × 16 / 1.5k per φ | 9e-11 / 9e-11 | 9e-11 / 2.4e-11 |
+| [D] box in an in-plane hyperbolic biaxial slab, grouped | 3.4k per φ | 2.2e-8 | 7.9e-11 |
+
+  No stall anywhere. Found there: on an azimuthally symmetric stack the box grid scanned all its φ for poles (the `φ_scan` override skipped the symmetry test), and the 32 near-identical copies of each pole were chained into wide pole segments: [A] went 19.1k → 2.4k kρ with the fix, same accuracy.
 - **Open.**
   - The pole-track `N_φ` is conservative (MoO₃ at ρ = 0: 682 where 128 gives 2e-9). A φ-adaptive rule, or weighting each track by its decay `e^{−q h_min}`, would cut it.
   - A light line that moves with φ (biaxial, gyrotropic half-spaces) is only substituted at the scanned φ; between them it sits in graded panels.
   - The lossless limit: a real-axis pole is reported at width `1e-12·q` and gets very fine panels; the integral is still ill-defined there (P6).
-  - Box sources: features seed the adaptive grid, but no box case from the handout was re-validated.
   - The point probes for `:adaptive` still put sources at `z_fracs·d` when `h_min` is not given.
 
 ## Changes since 2026-09-24
@@ -380,6 +389,7 @@ Load everything with `include("ClosedForm.jl")`.
   - Interior: `σ_b = −1`, `Ez_local` sign (1/kρ² decay), bulk 3×3 Maxwell solve 2e-15, face continuity, interior = exact average of point fields 1e-15.
   - Writes `Gz_ClosedForm_SourcePlane.png`.
 - **`Gz_ClosedForm_Quadrature_Validation.jl`** (2026-11-06, ~10 min; replaces `Gz_TailStall_Validation.jl`): the feature-driven quadrature on the handout's cases (ZrS₂, hBN, μ half-spaces vs Sommerfeld, InSb 2D, MoO₃ 2D), see "Unified k-space quadrature".
+- **`Gz_ClosedForm_BoxQuadrature_Validation.jl`** (2026-11-06, ~4 min): `box_kρ_grid` / `box_kρ_grid_grouped` on hyperbolic, metal-backed, gyrotropic and in-plane hyperbolic stacks vs dense references.
 - **`Gz_ClosedForm_Grid_Validation.jl`** (~5 min):
   - `point_kx_grid` vs a dense rule.
   - `box_kρ_grid` vs a dense rule per row group (self slab / neighbour voxel / across interface), compared with a point-probed axis. Converged to the tail bound; see open items.
