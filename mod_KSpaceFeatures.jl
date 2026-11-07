@@ -262,7 +262,7 @@ end
 
 """
     kspace_features(stack, ω, source_layer; h_min, ρ_max=0.0, dims=1, N_φ_scan=32,
-                    target_decay=25.0, kρ_cap=Inf, scan=true, scan_step=1e-3,
+                    target_decay=25.0, kρ_cap=nothing, kρ_cap_rel=1e5, scan=true, scan_step=1e-3,
                     prominence=1.05, c_φ=2.5, N_φ_min=64) -> NamedTuple
 
 Everything the rules need (module notes). `h_min` is the smallest
@@ -274,6 +274,12 @@ symmetric stack, `N_φ_scan` over `[0, π/2]` for a diagonal anisotropic one (th
 mirrors map the rest), `N_φ_scan` over `[0, 2π)` otherwise (a gyrotropic stack is
 not symmetric under `φ → φ + π`).
 
+Cost ceiling on the cut-off: `kρ_cap` (absolute, in the caller's k units) or, when
+it is `nothing` (default), `kρ_cap_rel·kmax` -- unit-independent, since `kmax`
+scales with the units. If the ceiling cuts below the geometric cut-off
+`target_decay/h_min`, the grid no longer resolves `h_min`: a warning is printed and
+`capped = true`, `K_geom` are returned.
+
 `Kcut` overrides the geometric cut-off (the box grid has its own, algebraic one);
 `φ_scan` overrides the scanned directions (a φ group of `box_kρ_grid_grouped`
 scans its own φ), except on an azimuthally symmetric stack, which scans φ = 0 only.
@@ -284,11 +290,11 @@ Fields: `classes`, `light_lines` (all layers, every scanned φ), `singular_lines
 `c_φ·Kcut·ρ_max` (harmonics of `e^{ikρρcos(φ−ψ)}` up to `kρρ`) and `N_φ_poles` =
 `c_η·log(10/rtol)/η_min`, `c_η = 1.5` (1.0 left InSb at 5.8e-6) (`_pole_track_η`: poles that move with φ make the integrand
 peak in φ), rounded up to even, so the `φ + π` pairs the reciprocity checks need
-are on the grid), `N_φ_lateral`, `N_φ_poles`, `η_min`, `φ_scan`.
+are on the grid), `N_φ_lateral`, `N_φ_poles`, `η_min`, `φ_scan`, `K_geom`, `K_cap`, `capped`.
 """
 function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                          h_min::Real, ρ_max::Real=0.0, dims::Int=1, N_φ_scan::Int=32,
-                         target_decay::Real=25.0, kρ_cap::Real=Inf, scan::Bool=true,
+                         target_decay::Real=25.0, kρ_cap::Union{Nothing,Real}=nothing, kρ_cap_rel::Real=1e5, scan::Bool=true,
                          scan_step::Real=1e-3, prominence::Real=1.05, c_φ::Real=2.5, N_φ_min::Int=64,
                          Kcut::Union{Nothing,Real}=nothing, φ_scan=nothing, rtol::Real=1e-6, c_η::Real=1.5)
     dims in (1, 2) || error("kspace_features: dims must be 1 or 2")
@@ -318,8 +324,22 @@ function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer:
     kmax = isempty(ll) ? ωf : ll[end]
     # from the geometry only (handout P1): the 80·kmax floor of the old tail is not applied,
     # only 2·kmax, so the band always extends past the last light line
-    Kcut = Kcut === nothing ? tail_bound(decay_cutoff(h_min; target_decay=target_decay), kmax;
-                                         kρ_cap=kρ_cap, kx_ratio_min=2.0) : Float64(Kcut)
+    K_geom = decay_cutoff(h_min; target_decay=target_decay)
+    K_cap = kρ_cap === nothing ? Float64(kρ_cap_rel) * kmax : Float64(kρ_cap)
+    capped = false
+    if Kcut === nothing
+        Kcut = tail_bound(K_geom, kmax; kρ_cap=K_cap, kx_ratio_min=2.0)
+        if Kcut < K_geom
+            capped = true
+            @warn "kspace_features: the cost ceiling cuts the k-band at $(round(Kcut; sigdigits=4)) " *
+                  "below the geometric cut-off target_decay/h_min = $(round(K_geom; sigdigits=4)) " *
+                  "(h_min = $(h_min)): content closer than $(round(target_decay / Kcut; sigdigits=3)) " *
+                  "to the source is not resolved (integrand left at e^{-$(round(Kcut * h_min; sigdigits=3))}). " *
+                  "Raise kρ_cap / kρ_cap_rel, or accept the truncation."
+        end
+    else
+        Kcut = Float64(Kcut)
+    end
 
     poles = if scan
         k_lo = 0.5 * (isempty(ll) ? ωf : ll[1])
@@ -335,7 +355,8 @@ function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer:
     N_φ = dims == 2 ? 2 * cld(max(N_φ_min, N_lat, N_pole), 2) : 0
     return (classes=classes, light_lines=ll, singular_lines=sing, kmax=kmax, Kcut=Kcut,
             h_min=Float64(h_min), ρ_max=Float64(ρ_max), poles=poles, clusters=clusters,
-            N_φ=N_φ, N_φ_lateral=N_lat, N_φ_poles=N_pole, η_min=η, φ_scan=φ_scan, dims=dims)
+            N_φ=N_φ, N_φ_lateral=N_lat, N_φ_poles=N_pole, η_min=η, φ_scan=φ_scan, dims=dims,
+            K_geom=K_geom, K_cap=K_cap, capped=capped)
 end
 
 

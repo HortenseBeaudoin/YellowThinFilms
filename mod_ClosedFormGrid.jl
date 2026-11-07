@@ -336,7 +336,7 @@ end
 """
     point_kx_grid(stack, ω, source_layer; ρ_max=0.0, pz=nothing,
                   z_fracs=[0.1,0.3,0.5,0.7,0.9], engine=:auto, rtol=1e-6, atol=0.0,
-                  kr_order=7, maxevals=10_000, kρ_cap=2000.0, target_decay=25.0,
+                  kr_order=7, maxevals=10_000, kρ_cap=nothing, kρ_cap_rel=1e5, target_decay=25.0,
                   check=false, scan_poles=true, rule=(;), h_min=nothing)
         -> (kx_nodes, wt_nodes, info)
 
@@ -348,8 +348,10 @@ lateral position.
 Resolution. `pz` (default `thinnest_finite_layer(stack)/20`) is the grid's
 resolution: a point source has no size of its own, its integrand decays only like
 `e^{−kρ|ζ|}`, so the band is cut at `Kcut = target_decay/(pz/2)`
-(`KxGrid.decay_cutoff`), at least 80·kmax and at most `kρ_cap` (cost ceiling; it
-wins over the floor). Content closer to the source than `pz/2` is not resolved. `h_min` overrides `pz/2`
+(`KxGrid.decay_cutoff`), at least 2·kmax and at most `kρ_cap` (cost ceiling, in the
+caller's k units; default `nothing` = `kρ_cap_rel·kmax`, unit-independent; it wins over
+the floor, with a warning and `info.features.capped = true` when it cuts below the
+geometric cut-off). Content closer to the source than `pz/2` is not resolved. `h_min` overrides `pz/2`
 (e.g. `2h` for the scattered field of a source at height `h` on its own plane,
 `terms = :scattered`, the direct term added analytically: handout §2g).
 With `h_min` given, the probes (adaptive engine, `check`) only use source depths at
@@ -380,7 +382,7 @@ function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::I
                        ρ_max::Real=0.0, pz::Union{Nothing,Real}=nothing,
                        z_fracs::AbstractVector{<:Real}=[0.1, 0.3, 0.5, 0.7, 0.9], engine::Symbol=:auto,
                        rtol::Real=1e-6, atol::Real=0.0, kr_order::Int=7, maxevals::Int=10_000,
-                       kρ_cap::Real=2000.0, target_decay::Real=25.0, check::Bool=false,
+                       kρ_cap::Union{Nothing,Real}=nothing, kρ_cap_rel::Real=1e5, target_decay::Real=25.0, check::Bool=false,
                        scan_poles::Bool=true, rule=(;), h_min::Union{Nothing,Real}=nothing)
     N = length(stack)
     (1 <= source_layer < N) || error("point_kx_grid: source_layer=$source_layer must be in 1:$(N-1)")
@@ -393,7 +395,7 @@ function point_kx_grid(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::I
     probes = _point_probes(stack, source_layer, zf_probe, dist, Float64(ρ_max))
 
     feat = kspace_features(stack, ωf, source_layer; h_min=dist, ρ_max=ρ_max, dims=1,
-                           target_decay=target_decay, kρ_cap=kρ_cap, scan=scan_poles)
+                           target_decay=target_decay, kρ_cap=kρ_cap, kρ_cap_rel=kρ_cap_rel, scan=scan_poles)
     eng = choose_engine(stack, engine)
     if eng === :fixed
         kx, wt, panels = fixed_kρ_rule(feat; rtol=rtol, rule...)
@@ -493,7 +495,7 @@ end
 
 """
     point_kρ_grid_2d(stack, ω, source_layer; ρ_max, pz=nothing, z_fracs=[0.1,0.5,0.9],
-                     N_phi=nothing, rtol=1e-6, kρ_cap=2000.0, target_decay=25.0,
+                     N_phi=nothing, rtol=1e-6, kρ_cap=nothing, kρ_cap_rel=1e5, target_decay=25.0,
                      c_φ=2.5, N_φ_scan=32, check=false, scan_poles=true, rule=(;),
                      h_min=nothing, terms=:all, max_nodes=1_500_000)
         -> (kρ_nodes, kρ_weights, phi_nodes, phi_weights, info)
@@ -534,7 +536,7 @@ probes the source plane itself (`Δz = 0`).
 function point_kρ_grid_2d(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                           ρ_max::Real, pz::Union{Nothing,Real}=nothing,
                           z_fracs::AbstractVector{<:Real}=[0.1, 0.5, 0.9], N_phi::Union{Nothing,Int}=nothing,
-                          rtol::Real=1e-6, kρ_cap::Real=2000.0, target_decay::Real=25.0,
+                          rtol::Real=1e-6, kρ_cap::Union{Nothing,Real}=nothing, kρ_cap_rel::Real=1e5, target_decay::Real=25.0,
                           c_φ::Real=2.5, N_φ_scan::Int=32, check::Bool=false, scan_poles::Bool=true, rule=(;),
                           h_min::Union{Nothing,Real}=nothing, terms::Symbol=:all, max_nodes::Int=1_500_000)
     N = length(stack)
@@ -543,7 +545,7 @@ function point_kρ_grid_2d(stack::Vector{<:AbstractLayer}, ω::Real, source_laye
     pzf = pz === nothing ? thinnest_finite_layer(stack) / 20 : Float64(pz)
     dist = h_min === nothing ? pzf / 2 : Float64(h_min)
     feat = kspace_features(stack, ωf, source_layer; h_min=dist, ρ_max=ρ_max, dims=2, N_φ_scan=N_φ_scan,
-                           target_decay=target_decay, kρ_cap=kρ_cap, scan=scan_poles, c_φ=c_φ, rtol=rtol)
+                           target_decay=target_decay, kρ_cap=kρ_cap, kρ_cap_rel=kρ_cap_rel, scan=scan_poles, c_φ=c_φ, rtol=rtol)
     kρ, wρ, panels = fixed_kρ_rule(feat; rtol=rtol, rule...)
     Nφ = N_phi === nothing ? feat.N_φ : N_phi
     φs, wφ = build_kphi_grid(Nφ)
