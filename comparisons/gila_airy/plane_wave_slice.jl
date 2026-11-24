@@ -1,6 +1,6 @@
 # plane_wave_slice.jl -- one plane wave of fixed k_t falling from above on a three-film stack;
 # field in the top vacuum layer on an x/z slice.
-# Own solver: a `ModalSeed` at the top edge of layer 1 + `Modal_amp_profile` (src = obs = layer 1).
+# Own solver: `plane_wave_amp` with the wave incident from the top half-space (layer 1).
 # Gila: the tutorial's Bloch-periodic 2×2 column, Bloch phases set by k_t, extended along x
 # with the same Bloch phase. Both solve the same laterally infinite, periodic problem.
 #
@@ -119,7 +119,7 @@ const Y_SLICE = -Float64(Δ) / 2                                         # Gila'
 incident_profile() = [e_inc[c] * cis(-kz * h) for h in heights(), c in 1:3]
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Own solver: plane wave = modal seed at the top edge of layer 1
+#  Own solver: `plane_wave_amp`, incident from the top (layer 1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 function own_profile()
@@ -129,19 +129,18 @@ function own_profile()
     Sint, Sprop = S_all_ingredients(stack, modes)
     Sall = S_all_Matrix(stack, modes, Sint, Sprop)
 
-    # incident wave in the own frame, its tangential (Ex, Ey, Hx, Hy) at the top edge (h = H)
+    # incident wave in the own frame, its tangential (Ex, Ey, Hx, Hy) at the stack face (h = 0)
     k_own = SVector(k_inc[1], k_inc[2], -k_inc[3])
-    E_own = SVector(e_inc[1], e_inc[2], -e_inc[3]) * cis(-kz * H)
+    E_own = SVector(e_inc[1], e_inc[2], -e_inc[3])
     H_own = cross(k_own, E_own) / ω
     a = Matrix(modes[1].Vf) \ [E_own[1], E_own[2], H_own[1], H_own[2]]
-    seed = ModalSeed(1, H, a, zeros(ComplexF64, 2))                     # layer 1: z = height ⇒ zpos = 0
+    A = plane_wave_amp(stack, modes, Sall, Sint, a; side = :top, obs_layers = 1:1)[1]   # incident + reflected
 
     depth = [H - h for h in heights()]
-    amps = Modal_amp_profile(stack, [seed], 1, modes, Sall, Sint, depth)
     ϵzt, ϵzz = _mode_field_eps(stack[1])
     kvec = SVector{2,ComplexF64}(KT...)
     E = zeros(ComplexF64, n_top, 3)
-    for (i, (z, A)) in enumerate(zip(depth, amps)), m in 1:2
+    for (i, z) in enumerate(depth), m in 1:2
         exf, eyf, ezf, qf = _mode_field_core(ϵzt, ϵzz, modes[1], ω, kvec, :f, m)
         exb, eyb, ezb, qb = _mode_field_core(ϵzt, ϵzz, modes[1], ω, kvec, :b, m)
         φf, φb = A.Ef[m] * cis(qf * z), A.Eb[m] * cis(qb * (z - H))

@@ -14,8 +14,8 @@ with NO stack solve:
     `sb∘e^{iQb·(z'−zpos)}` if `z' < zpos` (backward branch), evaluated with the
     combined (always decaying) exponent. This Heaviside branch is the one
     non-separable piece and is kept as an explicit branch (§1.3). Strict
-    inequalities, exactly as `FieldSolver.Modal_amp_profile`: at `z' == zpos`
-    exactly (a point source's own singular plane) neither branch is added.
+    inequalities: at `z' == zpos` exactly (a point source's own singular
+    plane) neither branch is added.
  3. `Φf = e^{iQf,obs·z'}`, `Φb = e^{iQb,obs·(z'−d_obs)}` and the lateral
     Jacobi–Anger (J0,J1,J2) reduction (exact for a point source on an
     azimuthally symmetric stack).
@@ -68,7 +68,8 @@ function _phase(kz::ComplexF64, z::Float64)
     end
 end
 
-# `zpos` convention of FieldSolver._seed_from_sources (layer 1 is flipped).
+# Source position in the cavity frame of its layer: layer 1 is flipped (its `z` is the
+# distance from the stack, its z=0 edge the outer one), every other layer uses `z` as is.
 @inline _zpos(cache, zsrc_local::Real) =
     cache.source_layer == 1 ? cache.d_src - Float64(zsrc_local) : Float64(zsrc_local)
 
@@ -163,7 +164,7 @@ end
     amplitude_at(cache, obs_layer, zsrc_local; Δz_box=0.0) -> (Af, Ab)
 
 Unweighted modal amplitudes, `Nk×2×3` each (node, mode, canonical moment
-x̂/ŷ/ẑ), referenced like `Modal_amp`: `Af` at z=0 of `obs_layer`, `Ab` at
+x̂/ŷ/ẑ), referenced like `ModalAmp`: `Af` at z=0 of `obs_layer`, `Ab` at
 z=d_obs. For `obs_layer == source_layer` this is the REFLECTED part only; add
 `direct_amplitude` for the observation plane of interest.
 
@@ -202,7 +203,7 @@ function amplitude_at(cache::CavityTransferCache1D, obs_layer::Int, zsrc_local::
     return Af, Ab
 end
 
-# Same-layer direct-term branch (§1.3): point -> strict sign of ζ (as Modal_amp_profile);
+# Same-layer direct-term branch (§1.3): point -> strict sign of ζ;
 # box -> forward if ζ ≥ Δz/2, backward if ζ ≤ −Δz/2, and an error inside the slab,
 # which needs the interior routine (§5.3).
 @inline function _direct_branch(ζ::Float64, Δz::Float64)
@@ -224,7 +225,7 @@ free of the overflow the split form `sf∘e^{−iQf·zpos} × e^{iQf·z_obs}` hi
 deep-evanescent nodes (`Im Qf·zpos > 709` → Inf·0 = NaN, i.e. a silently
 dropped direct contribution -- see §5.2 of the plan for the same range
 argument). Uses the clamped `_phase`. `z_obs` is local, z'=0 at the layer's
-z=0 edge; strict inequalities as in `Modal_amp_profile`.
+z=0 edge; strict inequalities (nothing added at `z_obs == zpos` exactly).
 
 Box (`Δz_box > 0`): exterior only, `|ζ| ≥ Δz_box/2`, where the direct term is the
 point one times `D` (`_boxphase(Q, ζ, Δz)`, face-difference form).

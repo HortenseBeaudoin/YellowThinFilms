@@ -19,11 +19,11 @@ depth then enters only through `Φf = e^{iQf,obs·z'}`, `Φb = e^{iQb,obs·(z'�
 
 Conventions (fixed by the foundation modules):
   - `zpos = d − z` for `source_layer == 1`, `zpos = z` otherwise
-    (`FieldSolver._seed_from_sources`).
+    (`ClosedFormField._zpos`).
   - the cached backward seed is `sb = −sib_raw`: `Source_projection_Berreman_xyz`'s
-    raw `sib` has the opposite sign from the `sib` `Modal_amp` consumes (`σ_b = −1`,
-    confirmed through `Ψ_p = −(iM)⁻¹Js/Δz`, plan §5.3). `sf, sb` below are the
-    Modal_amp-convention seeds, one column per canonical moment x̂,ŷ,ẑ.
+    raw `sib` has the opposite sign from the backward seed `T^o` takes (`σ_b = −1`,
+    confirmed through `Ψ_p = −(iM)⁻¹Js/Δz`, plan §5.3). `sf, sb` below are those
+    edge-seed-convention amplitudes, one column per canonical moment x̂,ŷ,ẑ.
   - same-layer `T^o` holds the REFLECTED (cavity) part only; the direct term is
     added by the synthesis layer (`mod_ClosedFormField.jl`) with an explicit
     branch on the sign of `z' − zpos`.
@@ -144,7 +144,7 @@ Everything the closed-form synthesis needs, per radial node `k` of a 1D
 
   - `T[o][k]`       -- 4×4 `T^o` (see module docstring), per obs layer `o`
   - `Qf_src[k]`, `Qb_src[k]`, `d_src` -- what `Ψ(z)` needs
-  - `sf[k]`, `sb[k]` -- 2×3 point seeds (Modal_amp convention, `sb = −sib_raw`),
+  - `sf[k]`, `sb[k]` -- 2×3 point seeds (edge-seed convention, `sb = −sib_raw`),
                        column q = canonical moment x̂,ŷ,ẑ
   - `basis[o]`      -- mode field basis + `KZf/KZb` (= `Qf_obs,Qb_obs`) of layer `o`
   - `d_obs[o]`

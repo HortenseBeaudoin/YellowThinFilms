@@ -43,8 +43,8 @@ A plane wave with a fixed k_t and a random complex s/p polarization falls from a
 three-film stack. The script compares the field in the top vacuum layer (0 < z < λ/2) on an x/z
 slice. In the figures z is vertical and the slice sits above the drawn stack.
 
-- **own:** a `ModalSeed` at the top edge of layer 1 (src = obs = layer 1) and
-  `Modal_amp_profile` give the amplitudes at each depth, and `_mode_field_core` gives (Ex, Ey, Ez).
+- **own:** `plane_wave_amp` (incident from layer 1) gives the amplitudes in the top layer, valid
+  at every depth there, and `_mode_field_core` gives (Ex, Ey, Ez).
 - **Gila:** the tutorial's Bloch 2×2 column (λ/64 by default) in Float64, with Bloch phases
   (−kx·2Δ, −ky·2Δ). It is extended along x with the same phase.
 

@@ -1,23 +1,12 @@
 module SourceHandling
 
 export Dipole_constructor
-export SourceDef, Dipole, ModalSeed
+export SourceDef, Dipole
 export Sheet
 
 using StaticArrays
 
 abstract type SourceDef end
-
-# ────────────────────────── GENERAL SOURCE INPUT ───────────────────────────────────
-
-# Source definition adapter to the solver, most source type should have translator to this type
-# x-y wrapped into sif and sib (to confirm)
-struct ModalSeed <: SourceDef
-    layer :: Int
-    z     :: Float64
-    sif   :: Vector{ComplexF64}
-    sib   :: Vector{ComplexF64}
-end
 
 # TODO Maybe reframe this as a "moment" constructor rather than dipole, adjust the sheet as well    
 # ────────────────────────── DIPOLE ─────────────────────────────

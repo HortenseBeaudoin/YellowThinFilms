@@ -1,17 +1,22 @@
 include("ClosedForm.jl")
-using LinearAlgebra, StaticArrays, Printf
+using LinearAlgebra, StaticArrays, Printf, Random
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gz_ClosedForm_Foundation_Validation.jl -- the §3 foundation extension.
+# Gz_ClosedForm_Foundation_Validation.jl -- the §3 foundation, checked on the physics.
 #
 # `_cavity_transfer_columns` runs FieldSolver's cavity resummation + stack walk
 # on the 4 unit edge seeds, giving the z-independent 4×4 map T^o per obs layer.
-# The physical seed [S₊;S₋] pushed through T^o must reproduce:
-#   - `Modal_amp`'s Ef/Eb in every other layer (cross-layer);
-#   - `Modal_amp_profile`'s reflected part in the source layer (its value at
-#     z'=d minus the forward direct jumps, at z'=0 minus the backward ones).
-# Roundoff, not bit-for-bit: T·u sums 4 columns in a different order. Isotropic,
-# uniaxial, biaxial and gyrotropic stacks; propagating to evanescent kt.
+# No second solver is used as reference: the amplitudes `T^o·[S₊;S₋]` (plus the
+# direct term in the source layer) must satisfy the conditions that define the
+# solution uniquely:
+#   - tangential (Ex, Ey, Hx, Hy) = Vf·Ef(z) + Vb·Eb(z) continuous at every interface;
+#   - nothing incoming from the half-spaces (no Ef in layer 1, no Eb in layer N,
+#     apart from the source's own direct term);
+#   - for `plane_wave_amp`, the incident amplitude found back at the stack face.
+# The jump at the source plane is built into the direct term. Sources: the point
+# seed of `Source_projection_Berreman_xyz` (x̂, ŷ, ẑ) at three depths of every
+# finite and top layer, and plane waves from both sides. Isotropic, uniaxial,
+# biaxial and gyrotropic stacks; propagating to evanescent kt.
 # ─────────────────────────────────────────────────────────────────────────────
 
 const FS = FieldSolver
@@ -32,45 +37,78 @@ stacks = [
 ]
 ω = 2π
 kts = [(0.3, 0.0), (1.2, 0.4), (2.9, -1.1), (8.0, 3.0)]
-relerr(a, b) = norm(a - b) / max(norm(b), 1e-300)
 
-worst_cross = 0.0; worst_same = 0.0; ncase = 0
+# Tangential field of layer k at local depth z from ModalAmp-convention amplitudes
+# (Ef at z=0, Eb at z=d); also returns the size of the two terms, the roundoff scale.
+function ψ(modes, stack, k, Ef, Eb, z)
+    m = modes[k]
+    tf = m.Vf * (Ef .* FS._SProp(z, m.Qf))
+    tb = m.Vb * (Eb .* FS._SProp(z - stack[k].d, m.Qb))
+    return tf + tb, norm(tf) + norm(tb)
+end
+
+# Worst continuity mismatch over all interfaces. `amp(k, side)` gives (Ef, Eb) of layer k
+# valid at its edge `side` (:left = z=0, :right = z=d). Mismatch is relative to the larger
+# of the local field and `floor` (fields far down an evanescent tail sit at roundoff).
+function continuity_err(modes, stack, amp, floor)
+    worst = 0.0
+    for k in 1:length(stack)-1
+        L, sL = ψ(modes, stack, k, amp(k, :right)..., stack[k].d)
+        R, sR = ψ(modes, stack, k + 1, amp(k + 1, :left)..., 0.0)
+        worst = max(worst, norm(L - R) / max(sL, sR, floor))
+    end
+    return worst
+end
+
+worst_pt = 0.0; worst_pt_rad = 0.0; worst_pw = 0.0; worst_pw_bc = 0.0; ncase = 0
 for (label, stack) in stacks
     N = length(stack)
-    for (kx, ky) in kts
+    for (ki, (kx, ky)) in enumerate(kts)
         modes = Modes_Stack(stack, ω, [kx, ky])
         Sint, Sprop = S_all_ingredients(stack, modes)
         Sall = S_all_Matrix(stack, modes, Sint, Sprop)
+
+        # ── point seed in every layer but the last ──
         for layer in 1:(N - 1)
             d = stack[layer].d
+            Qf, Qb = modes[layer].Qf, modes[layer].Qb
             sif, sib = Source_projection_Berreman_xyz([kx, ky], ω, stack[layer].ϵ, modes[layer])
             T = FS._cavity_transfer_columns(stack, layer, modes, Sall, Sint)
-            _, _, _, Qf, Qb, _ = FS._R_cavity(stack, layer, modes, Sall)
             for q in 1:3, zf in (0.13, 0.5, 0.91)
-                z = zf * d
-                seed = ModalSeed(layer, z, sif[:, q], -sib[:, q])      # Modal_amp convention: −sib
-                full = Modal_amp(stack, SourceDef[seed], layer, modes, Sall, Sint)
-                S₊, S₋, _ = FS._seed_from_sources(SourceDef[seed], layer, N, Qf, Qb, d)
-                u = vcat(S₊, S₋)
-                for o in 1:N
-                    global ncase += 1
-                    v = T[o] * u
-                    if o == layer
-                        zpos = layer == 1 ? d - z : z
-                        p0 = Modal_amp_profile(stack, SourceDef[seed], layer, modes, Sall, Sint, [0.0, d])
-                        Ef_refl = p0[2].Ef - seed.sif .* FS._SProp(-zpos, Qf)
-                        Eb_refl = p0[1].Eb - seed.sib .* FS._SProp(d - zpos, Qb)
-                        e = norm(v - vcat(Ef_refl, Eb_refl)) / max(norm(vcat(p0[2].Ef, p0[1].Eb)), 1e-300)
-                        global worst_same = max(worst_same, e)
-                    else
-                        global worst_cross = max(worst_cross, relerr(v, vcat(full[o].Ef, full[o].Eb)))
-                    end
-                end
+                global ncase += 1
+                sf, sb = SVector{2}(sif[:, q]), SVector{2}(-sib[:, q])   # edge-seed convention: −sib
+                zpos = layer == 1 ? d - zf * d : zf * d
+                u = vcat(sf .* FS._SProp(d - zpos, Qf), sb .* FS._SProp(-zpos, Qb))
+                A = Dict(o => (SVector{2}((T[o] * u)[1:2]), SVector{2}((T[o] * u)[3:4])) for o in 1:N)
+                # source layer: add the direct term on the side of the edge asked for
+                amp(k, side) = k != layer ? A[k] :
+                    side === :right ? (A[k][1] + sf .* FS._SProp(-zpos, Qf), A[k][2]) :
+                                      (A[k][1], A[k][2] + sb .* FS._SProp(d - zpos, Qb))
+                scale = norm(vcat(sf, sb))
+                global worst_pt = max(worst_pt, continuity_err(modes, stack, amp, 1e-12 * scale))
+                # radiation: no reflected wave coming in from layer 1's or layer N's outer side
+                global worst_pt_rad = max(worst_pt_rad, norm(A[1][1]) / scale, norm(A[N][2]) / scale)
             end
+        end
+
+        # ── plane wave from each side ──
+        for side in (:top, :bottom)
+            a = SVector{2,ComplexF64}(randn(Xoshiro(17ki + length(label)), ComplexF64, 2))
+            P = plane_wave_amp(stack, modes, Sall, Sint, a; side = side)
+            amp(k, _) = (P[k].Ef, P[k].Eb)
+            global worst_pw = max(worst_pw, continuity_err(modes, stack, amp, 1e-12 * norm(a)))
+            # incident wave at the stack face, nothing incoming from the other side
+            inc, none = side === :top ?
+                (P[1].Ef .* FS._SProp(stack[1].d, modes[1].Qf), P[N].Eb) :
+                (P[N].Eb .* FS._SProp(-stack[N].d, modes[N].Qb), P[1].Ef)
+            global worst_pw_bc = max(worst_pw_bc, norm(inc - a) / norm(a), norm(none) / norm(a))
         end
     end
 end
 
-@printf("T^o·[S₊;S₋] vs Modal_amp (cross-layer):          worst rel err %.3e  (%d cases)\n", worst_cross, ncase)
-@printf("T^o·[S₊;S₋] vs Modal_amp_profile reflected part: worst rel err %.3e\n", worst_same)
-println(worst_cross < 1e-11 && worst_same < 1e-11 ? "FOUNDATION: PASS" : "FOUNDATION: FAIL")
+@printf("point seed, T^o: interface continuity       worst rel err %.3e  (%d cases)\n", worst_pt, ncase)
+@printf("point seed, T^o: no incoming wave           worst rel     %.3e\n", worst_pt_rad)
+@printf("plane_wave_amp:  interface continuity       worst rel err %.3e\n", worst_pw)
+@printf("plane_wave_amp:  incident at face / no back worst rel err %.3e\n", worst_pw_bc)
+ok = max(worst_pt, worst_pt_rad, worst_pw, worst_pw_bc) < 1e-10
+println(ok ? "FOUNDATION: PASS" : "FOUNDATION: FAIL")

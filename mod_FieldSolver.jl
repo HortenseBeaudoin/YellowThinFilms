@@ -1,11 +1,10 @@
 module FieldSolver
 
-export ModalAmp, Modal_amp, Modal_amp_profile
+export ModalAmp, plane_wave_amp
 export _cavity_transfer_columns
 
-import ..ModeSolver: AbstractLayer, Modes
-import ..ScatteringMatrix: ScatteringM, _SProp, _Redheffer
-import ..SourceHandling: SourceDef, ModalSeed
+import ..ModeSolver: AbstractLayer, Modes, Modes_Stack
+import ..ScatteringMatrix: ScatteringM, _SProp, _Redheffer, S_all_ingredients, S_all_Matrix
 
 
 using LinearAlgebra
@@ -61,10 +60,6 @@ function _SProp(d::Real, Q::AbstractVector)
 end
 
 
-"Extracts `(z, sif, sib)` from one source (`ModalSeed`: Modal_amp-convention seeds)."
-_seed(s::ModalSeed) = (s.z, SVector{2,ComplexF64}(s.sif[1], s.sif[2]), SVector{2,ComplexF64}(s.sib[1], s.sib[2]))
-
-
 """
 Reflection matrices for `stack[layer]` as seen from its own TRUE edges (z=0
 and z=d).
@@ -90,43 +85,6 @@ end
 
 
 
-#TODO Sources are the arbitrary sources here, right ? If so, this could be simplify to have this as a default
-"""
-    _seed_from_sources(sources, layer, N, Qf, Qb, d) -> (S₊, S₋, seeds)
-
-Collapses every source to the layer's own two true edges: `S₊` (forward seed,
-referenced at z=d) and `S₋` (backward seed, referenced at z=0), plus the
-per-source `(zpos, sif, sib)` list `Modal_amp_profile` needs for the direct
-(within-layer) term. This is the ONLY place a source's `z` enters the solve:
-each source contributes `sif .* _SProp(d-zpos,Qf)` to `S₊` and
-`sib .* _SProp(-zpos,Qb)` to `S₋`; everything downstream
-(`_cavity_resummation`, `_walk_stack`) is linear in `(S₊,S₋)` and
-z-independent. Split out of `_cavity_solve` (2026-09-23) unchanged.
-"""
-function _seed_from_sources(sources::Vector{<:SourceDef}, layer::Int, N::Int,
-                            Qf::AbstractVector, Qb::AbstractVector, d::Real)
-    S₊  = zero(SVector{2,ComplexF64})   # forward seed, z=d
-    S₋ = zero(SVector{2,ComplexF64})   # backward seed, z=0
-    seeds = Vector{Tuple{Float64,SVector{2,ComplexF64},SVector{2,ComplexF64}}}(undef, length(sources))
-    for (i, s) in enumerate(sources)
-        z, sif, sib = _seed(s)
-        @assert layer < N || iszero(sif) "layer==N (semi-infinite) sources cannot have a forward (sif) component -- nothing reflects it back from infinity"
-
-        zpos = layer == 1 ? d - z : z
-        seeds[i] = (zpos, sif, sib)
-
-        if layer < N
-            φf = _SProp(d-zpos, Qf)
-            S₊ = S₊ + sif .* φf
-        end
-
-        φb = _SProp(-zpos, Qb)
-        S₋ = S₋ + sib .* φb
-    end
-    return S₊, S₋, seeds
-end
-
-
 """
     _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer) -> (F⁺, F⁻)
 
@@ -135,7 +93,7 @@ reflections between the layer's two edges,
 `F⁺ = (I - ΦF·RL·ΦB·RR)⁻¹ (S₊ + ΦF·RL·S₋)`, `F⁻ = S₋ + ΦB·RR·F⁺`.
 
 Generic over the seed's shape: `S₊,S₋` may be the physical `SVector{2}` seeds
-(what `_cavity_solve` passes) or `SMatrix{2,n}` blocks of basis inputs (what
+(one physical seed) or `SMatrix{2,n}` blocks of basis inputs (what
 `_cavity_transfer_columns` passes, one column per unit basis vector) -- the
 same arithmetic runs on every column, so the matrix form IS the linear map.
 """
@@ -153,36 +111,12 @@ end
 
 
 """
-Derives the layer's two-sided cavity (F⁺, F⁻) from `sources`, plus everything needed to
-either walk the rest of the stack (`Modal_amp`) or reconstruct the field
-strictly WITHIN `layer` at an arbitrary point.
-
-= `_seed_from_sources` (z-dependent seed) + `_cavity_resummation` (linear,
-z-independent) -- factored 2026-09-23 so the linear part can be reused on unit
-basis inputs by `_cavity_transfer_columns`; behavior unchanged.
-"""
-function _cavity_solve(stack::Vector{<:AbstractLayer}, sources::Vector{<:SourceDef}, layer::Int,
-                                 modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM})
-    N = length(stack)
-    @assert !isempty(sources) "sources must be non-empty"
-    @assert 1 <= layer <= N "layer must be a valid stack index"
-
-    RL, RR, RR_right, Qf, Qb, d = _R_cavity(stack, layer, modes, Sall)
-
-    S₊, S₋, seeds = _seed_from_sources(sources, layer, N, Qf, Qb, d)
-    F⁺, F⁻ = _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer)
-
-    return F⁺, F⁻, RL, RR, RR_right, Qf, Qb, d, N, seeds
-end
-
-
-"""
     _walk_stack(stack, layer, F⁺, F⁻, RL, RR_right, modes, Sall, Sint; tol, layers)
         -> (Ef_tot, Eb_tot)
 
 The Redheffer walk from the source layer's cavity amplitudes `(F⁺,F⁻)` to
 every other layer, plus the final re-referencing of `Eb` to each layer's own
-z=d. Extracted verbatim from `Modal_amp` (2026-09-23). Linear in `(F⁺,F⁻)`
+z=d. Extracted verbatim from the former `Modal_amp` (2026-09-23). Linear in `(F⁺,F⁻)`
 (the `_cond2x2` guard and `_flush_denormal` depend on `Sall` / on magnitudes
 at the denormal floor only), and generic over their shape like
 `_cavity_resummation`: `SVector{2}` for a physical solve, `SMatrix{2,n}` for
@@ -299,20 +233,22 @@ const _E₋ = SMatrix{2,4,ComplexF64}(0,0, 0,0, 1,0, 0,1)
         -> Dict{Int, SMatrix{4,4,ComplexF64,16}}
 
 The z-independent linear map `T^o` from the source layer's edge seeds
-`[S₊; S₋]` (see `_seed_from_sources`) to the modal amplitudes `[Ef; Eb]` of
+`[S₊; S₋]` to the modal amplitudes `[Ef; Eb]` of
 each observation layer `o ∈ obs_layers`:
 
     [Ef_o; Eb_o] = T^o · [S₊; S₋]
 
 obtained by running `_cavity_resummation` + `_walk_stack` on the 4 unit basis
-inputs at once (exact, since both are linear in `(S₊,S₋)`). Reference
-conventions match `Modal_amp`: `Ef_o` at z=0 of layer `o`, `Eb_o` at z=d.
+inputs at once (exact, since both are linear in `(S₊,S₋)`). `S₊` is the forward
+seed referenced at z=d of `layer`, `S₋` the backward seed at z=0: a source at
+`zpos` with modal amplitudes `(sf, sb)` gives `S₊ = sf∘e^{iQf(d−zpos)}`,
+`S₋ = sb∘e^{−iQb·zpos}` (`ClosedFormField._seed_phases`). Reference conventions
+are `ModalAmp`'s: `Ef_o` at z=0 of layer `o`, `Eb_o` at z=d.
 
 For `o == layer` (same layer) the columns are the REFLECTED (cavity) part only,
-`[RL·F⁻; RR·F⁺]` -- exactly `Modal_amp_profile`'s `Ef_j0`/`Eb_d`; the direct
-term (`Σ sif·e^{-iQf zpos}` below / `sib·e^{iQb(d-zpos)}` above the source) is
-not part of this map and is added by the caller. For `o ≠ layer` the columns
-are `Modal_amp`'s `Ef_tot[o]`/`Eb_tot[o]`.
+`[RL·F⁻; RR·F⁺]`; the direct term (`sf·e^{-iQf zpos}` below / `sb·e^{iQb(d-zpos)}`
+above the source) is not part of this map and is added by the caller. For
+`o ≠ layer` the columns are `_walk_stack`'s `Ef_tot[o]`/`Eb_tot[o]`.
 
 Added 2026-09-23 for the closed-form (z,z')-separable rewrite
 (`PLAN_closed_form_point_source_rewrite.md` §3, option 1).
@@ -346,64 +282,62 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-#TODO Is this truly adapted on sources confined to one layer ?
 """
-    Modal_amp(stack, sources::Vector{<:SourceDef}, layer::Int, modes, Sall, Sint; tol=1E-8, layers=nothing)
+    plane_wave_amp(stack, modes, Sall, Sint, a; side=:top, obs_layers=1:N, include_incident=true, tol=1E-8)
+        -> Dict{Int, ModalAmp{ComplexF64}}
+    plane_wave_amp(stack, ω, kt, a; kwargs...)
 
-Calculates the forward and backward field amplitude in each layer of a stack
-of thin layers, for one or several sources confined to one layer. 
+Modal amplitudes in each layer `o ∈ obs_layers` for a single plane wave of in-plane
+wavevector `kt` hitting the stack from one of its half-spaces.
+
+`a` holds the incident wave's two modal amplitudes, referenced AT THE STACK FACE:
+  - `side = :top`    -- forward modes of layer 1, at its z=d edge (the face with layer 2);
+  - `side = :bottom` -- backward modes of layer N, at its z=0 edge (the face with layer N-1).
+Referencing at the face keeps `a` independent of the nominal thickness given to the
+half-space. `a = modes[1].Vf \\ [Ex, Ey, Hx, Hy]` converts a tangential field at the face.
+
+This is the closed-form map with the edge seed `[S₊; S₋] = [a; 0]` (top) or `[0; a]`
+(bottom): `[Ef_o; Eb_o] = T^o · [S₊; S₋]`, `T^o = _cavity_transfer_columns(...)`.
+
+Output follows the `ModalAmp` convention in every layer: `Ef` at z=0, `Eb` at z=d. In the
+incidence layer the incident wave is added (`include_incident=true`) after moving it to that
+convention (`a·e^{-iQf·d₁}` top, `a·e^{+iQb·d_N}` bottom); with `include_incident=false`
+only the scattered (reflected) wave is returned there. A plane wave fills the whole
+incidence layer, so these amplitudes hold at every depth of it.
 """
-function Modal_amp(stack::Vector{<:AbstractLayer}, sources::Vector{<:SourceDef}, layer::Int,
-                   modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM},
-                   Sint::Vector{<:SMatrix{4,4}}; tol::Number = 1E-8,
-                   layers::Union{Nothing,AbstractSet{Int}} = nothing)
-    F⁺, F⁻, RL, _, RR_right, _, _, _, _, _ = _cavity_solve(stack, sources, layer, modes, Sall)
-    Ef_tot, Eb_tot = _walk_stack(stack, layer, F⁺, F⁻, RL, RR_right, modes, Sall, Sint; tol=tol, layers=layers)
-    return ModalAmp.(Ef_tot, Eb_tot)
-end
-
-
-"""
-    Modal_amp_profile(stack, sources, layer, modes, Sall, Sint, zs; tol=1E-8) -> Vector{ModalAmp}
-
-On-demand companion to `Modal_amp`: reconstructs the field at arbitrary
-points within the layer of the stack containing a source.  Internal source only.
-
-    Ef_eff(z) = Ef_j0 + Σ_{z_k < z} sif_k·exp(-i·Qf·z_k)
-    Eb_eff(z) = Eb_d  + Σ_{z_k > z} sib_k·exp(+i·Qb·(d-z_k))
-"""
-function Modal_amp_profile(stack::Vector{<:AbstractLayer}, sources::Vector{<:SourceDef}, layer::Int,
-                           modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM},
-                           Sint::Vector{<:SMatrix{4,4}}, zs::AbstractVector{<:Real}; tol::Number = 1E-8)
+function plane_wave_amp(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
+                        Sall::Vector{<:ScatteringM}, Sint::Vector{<:SMatrix{4,4}},
+                        a::AbstractVector; side::Symbol = :top, obs_layers = 1:length(stack),
+                        include_incident::Bool = true, tol::Number = 1E-8)
     N = length(stack)
-    @assert layer < N "Modal_amp_profile does not support layer==N -- the semi-infinite substrate has no far edge to reference a within-layer position against"
+    length(a) == 2 || error("plane_wave_amp: `a` must hold the 2 incident modal amplitudes (got $(length(a)))")
+    a2 = SVector{2,ComplexF64}(a[1], a[2])
+    z2 = zero(a2)
+    layer, u = side === :top    ? (1, vcat(a2, z2)) :
+               side === :bottom ? (N, vcat(z2, a2)) :
+               error("plane_wave_amp: side must be :top or :bottom (got :$side)")
 
-    F⁺, F⁻, RL, RR, _, Qf, Qb, d, _, seeds = _cavity_solve(stack, sources, layer, modes, Sall)
-    Ef_j0 = RL * F⁻
-    Eb_d  = RR * F⁺
+    T = _cavity_transfer_columns(stack, layer, modes, Sall, Sint; obs_layers = obs_layers, tol = tol)
 
-    result = Vector{ModalAmp{ComplexF64}}(undef, length(zs))
-    for (i, z) in enumerate(zs)
-
-        zf = Float64(z)
-        @assert -sqrt(eps(Float64)) <= zf <= d + sqrt(eps(Float64)) "z=$zf out of bounds [0,$d] for layer $layer"
-        Ef_eff = Ef_j0
-        Eb_eff = Eb_d
-
-        for (zpos, sif, sib) in seeds
-            if zpos < zf
-                Ef_eff = Ef_eff + sif .* _SProp(-zpos, Qf)
-            end
-            if zpos > zf
-                Eb_eff = Eb_eff + sib .* _SProp(d-zpos, Qb)
-            end
+    out = Dict{Int,ModalAmp{ComplexF64}}()
+    for (o, To) in T
+        v = To * u
+        Ef, Eb = v[SOneTo(2)], v[SVector(3, 4)]
+        if o == layer && include_incident
+            d = stack[layer].d
+            side === :top ? (Ef = Ef + a2 .* _SProp(-d, modes[layer].Qf)) :
+                            (Eb = Eb + a2 .* _SProp(d, modes[layer].Qb))
         end
-
-        result[i] = ModalAmp(_flush_denormal(Ef_eff), _flush_denormal(Eb_eff))
+        out[o] = ModalAmp(_flush_denormal(Ef), _flush_denormal(Eb))
     end
-
-    return result
+    return out
 end
 
+function plane_wave_amp(stack::Vector{<:AbstractLayer}, ω::Real, kt::AbstractVector, a::AbstractVector; kwargs...)
+    modes = Modes_Stack(stack, ω, kt)
+    Sint, Sprop = S_all_ingredients(stack, modes)
+    Sall = S_all_Matrix(stack, modes, Sint, Sprop)
+    return plane_wave_amp(stack, modes, Sall, Sint, a; kwargs...)
+end
 
 end

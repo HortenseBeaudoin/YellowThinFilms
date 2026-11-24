@@ -3,7 +3,7 @@
 #   include("ClosedForm.jl")
 #
 # Foundation: ModeSolver (Berreman eigenmodes), ScatteringMatrix (Redheffer),
-# SourceHandling (Dipole/Sheet/ModalSeed), SourceProjection (point seed),
+# SourceHandling (Dipole/Sheet), SourceProjection (point seed),
 # FieldSolver (cavity resummation + stack walk, `_cavity_transfer_columns`),
 # KxGrid (light lines, adaptive Gauss–Kronrod and graded Gauss–Legendre rules),
 # KSpaceFeatures (light lines, real-axis poles, cut-off: what the rules are built from), UniformSource (uniform-DFT grid/FFT).
