@@ -61,7 +61,7 @@ import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, Cav
 import ..ClosedFormField: closed_form_G
 import ..ClosedFormAssembly: padded_offsets, _plan, _padded_size
 import ..SourceHandling: Dipole
-import ..UniformSource: _nearest_node_index
+import ..Sheets: _nearest_node_index
 
 using LinearAlgebra
 using Base.Threads

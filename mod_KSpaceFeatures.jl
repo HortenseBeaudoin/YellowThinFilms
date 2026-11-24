@@ -101,9 +101,9 @@ semi-infinite source layer that is the stack's reflection seen from it (`r_pp`,
 `r_ss` and their mixing); inside the stack, the global modes (zeros of the cavity
 denominator) and the modes bound to either edge. 0 where the solve fails.
 
-`RR` is composed directly at the interface (`Sint[s] ⋆ SRight[s+1]`), not
-`FieldSolver._R_cavity`'s, which walks through the layer and back
-(`e^{−kz d}·e^{+kz d}`) and underflows to 0 once `Im kz·d ≳ 370` (the 300 nm Si
+`RR` is composed directly at the interface (`Sint[s] ⋆ SRight[s+1]`), as in
+`FieldSolver._R_cavity`, not by walking through the layer and back
+(`e^{−kz d}·e^{+kz d}`), which underflows to 0 once `Im kz·d ≳ 370` (the 300 nm Si
 cover of the ZrS₂ case, past kρ ≈ 1.24 nm⁻¹).
 """
 function _cavity_response(stack, ω, s::Int, kρ::Float64, φ::Float64)

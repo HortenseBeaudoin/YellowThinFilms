@@ -15,6 +15,16 @@ using StaticArrays
 #  Constant and structures declaration
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+    ModalAmp(Ef, Eb)
+
+Modal amplitudes resulting from the illumination of a single plane-wave,
+after propagation in the stack using S-matrices. 
+
+# Fields
+- `Ef::SVector{2,T}`: forward-going modes amplitudes, referenced to the left, z=0.
+- `Eb::SVector{2,T}`: backward-going modes amplitudes, referenced to the right, z=d.
+"""
 struct ModalAmp{T}
     Ef::SVector{2,T}
     Eb::SVector{2,T}
@@ -28,30 +38,27 @@ _flush_denormal(v::AbstractArray) = _flush_denormal.(v)
 #  Helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+    _cond2x2(A)
 
+Returns the conditionning of a 2x2 block `A`, after scaling each column to unit norm.
+Scaling makes the safegard accurate even when the two modes are order of magnitudes apart.
+"""
 function _cond2x2(A::SMatrix{2,2})
-    G = A' * A
-    tr   = real(G[1,1] + G[2,2])
-    det_ = real(G[1,1] * G[2,2] - G[1,2] * G[2,1])
-    disc = sqrt(max(tr^2 - 4 * det_, 0.0))
-    λ1 = (tr + disc) / 2
-    λ2 = (tr - disc) / 2
-    λ2 <= 0 && return Inf
-    return sqrt(λ1 / λ2)
-end
+    a1 = A[:, 1]; a2 = A[:, 2]
+    n1 = norm(a1); n2 = norm(a2)
 
-# `_cond2x2` after scaling each column to unit norm. A transmission block through a
-# layer whose two modes decay at very different rates (a hyperbolic slab: e^{-21}
-# vs e^{-3.7} at 150 nm) has columns of very different size; that is a scaling,
-# not a near-singularity, and the 2×2 solve handles it. Only an equilibrated
-# condition number above 1/tol means the two modes are genuinely indistinct.
-function _cond2x2_eq(A::SMatrix{2,2})
-    n1 = sqrt(abs2(A[1,1]) + abs2(A[2,1])); n2 = sqrt(abs2(A[1,2]) + abs2(A[2,2]))
     (n1 > 0 && n2 > 0 && isfinite(n1) && isfinite(n2)) || return Inf
-    return _cond2x2(A * Diagonal(SVector(1 / n1, 1 / n2)))
+    c = abs(dot(a1, a2)) / (n1 * n2)          # |cos θ| between the columns
+    c >= 1 && return Inf
+    return sqrt((1 + c) / (1 - c))
 end
 
+"""
+    _SProp(d, Q)
 
+Returns the 2x2 propagation matrix of a single direction, forward or backward.  
+"""
 function _SProp(d::Real, Q::AbstractVector)
     φ1 = exp(im * Q[1] * d)
     φ2 = exp(im * Q[2] * d)
@@ -59,15 +66,27 @@ function _SProp(d::Real, Q::AbstractVector)
     return SVector{2,Tc}(φ1, φ2)
 end
 
+# Unit basis inputs for `_cavity_transfer_columns`: column j of [S₊;S₋] is e_j.
+const _E₊ = SMatrix{2,4,ComplexF64}(1,0, 0,1, 0,0, 0,0)
+const _E₋ = SMatrix{2,4,ComplexF64}(0,0, 0,0, 1,0, 0,1)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cavity solve functions
+# ─────────────────────────────────────────────────────────────────────────────
 
 """
-Reflection matrices for `stack[layer]` as seen from its own TRUE edges (z=0
-and z=d).
+    _R_cavity(stack, layer, modes, Sall, Sint)
+
+Reflection matrices within a given layer, as seen from its own true edges,
+z=0 and z=d; used in cavity solve.
+Reflection matrix at right interface `RR` also returned; used in walk of 
+the stack. 
 """
 function _R_cavity(stack::Vector{<:AbstractLayer}, layer::Int,
-                           modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM})
-    N  = length(stack)
-    d  = stack[layer].d
+                           modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM},
+                           Sint::Vector{<:SMatrix{4,4}})
+    N = length(stack)
+    d = stack[layer].d
     Qf, Qb = modes[layer].Qf, modes[layer].Qb
 
     RL = SMatrix{2,2,ComplexF64}(Sall[layer].SLeft[SOneTo(2), SVector(3,4)])
@@ -76,51 +95,48 @@ function _R_cavity(stack::Vector{<:AbstractLayer}, layer::Int,
         return RL, zero(SMatrix{2,2,ComplexF64}), nothing, Qf, Qb, d
     end
 
-    SΦ = SMatrix{4,4,ComplexF64}(Diagonal(vcat(_SProp(-d, Qf), _SProp(d, Qb))))
-    RR_right   = _Redheffer(SΦ, Sall[layer].SRight)
+    RR_right = _Redheffer(Sint[layer], Sall[layer+1].SRight)
     RR = SMatrix{2,2,ComplexF64}(RR_right[SVector(3,4), SOneTo(2)])
 
     return RL, RR, RR_right, Qf, Qb, d
 end
 
-
-
 """
-    _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer) -> (F⁺, F⁻)
+    _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer)
 
-The linear, z-independent part of the cavity solve: resums the multiple
-reflections between the layer's two edges,
-`F⁺ = (I - ΦF·RL·ΦB·RR)⁻¹ (S₊ + ΦF·RL·S₋)`, `F⁻ = S₋ + ΦB·RR·F⁺`.
+The linear, z-independent part of the cavity solve. All values are referenced
+to the true layer's interface, or brought back to them. Solves;
+    F⁺ = S₊ + ΦF·RL·(S₋ + ΦB·RR·F⁺)
+    F⁻ = S₋ + ΦB·RR·F⁺
 
-Generic over the seed's shape: `S₊,S₋` may be the physical `SVector{2}` seeds
-(one physical seed) or `SMatrix{2,n}` blocks of basis inputs (what
-`_cavity_transfer_columns` passes, one column per unit basis vector) -- the
-same arithmetic runs on every column, so the matrix form IS the linear map.
+Returns (F⁺, F⁻), referenced at right and left interface respectively. 
 """
 function _cavity_resummation(S₊::StaticArray, S₋::StaticArray,
                              RL::SMatrix{2,2}, RR::SMatrix{2,2},
                              Qf::AbstractVector, Qb::AbstractVector, d::Real, N::Int, layer::Int)
     layer == N && return zero(S₋), S₋
     I_2x2 = SMatrix{2,2,ComplexF64}(I)
+
     ΦF = Diagonal(_SProp(d, Qf))
     ΦB = Diagonal(_SProp(-d, Qb))
+
     F⁺ = (I_2x2 - ΦF * RL * ΦB * RR) \ (S₊ + ΦF * (RL * S₋))
     F⁻ = S₋ + ΦB * (RR * F⁺)
     return F⁺, F⁻
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Core functions
+# ─────────────────────────────────────────────────────────────────────────────
 
 """
     _walk_stack(stack, layer, F⁺, F⁻, RL, RR_right, modes, Sall, Sint; tol, layers)
-        -> (Ef_tot, Eb_tot)
 
-The Redheffer walk from the source layer's cavity amplitudes `(F⁺,F⁻)` to
-every other layer, plus the final re-referencing of `Eb` to each layer's own
-z=d. Extracted verbatim from the former `Modal_amp` (2026-09-23). Linear in `(F⁺,F⁻)`
-(the `_cond2x2` guard and `_flush_denormal` depend on `Sall` / on magnitudes
-at the denormal floor only), and generic over their shape like
-`_cavity_resummation`: `SVector{2}` for a physical solve, `SMatrix{2,n}` for
-basis columns.
+Walk through the stack to compute modal amplitudes in each layer. Comes after the 
+cavity solve, works from its outputs. cond2x2 avoid inversion of near-singular 
+transimission blocks, and flush turns numerically negligible amplitudes into 0s. 
+
+Returns (Ef, Eb) referenced at the left (z=0) and right (z=d) interface respectively. 
 """
 function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArray, F⁻::StaticArray,
                      RL::SMatrix{2,2}, RR_right, modes::Vector{<:Modes},
@@ -131,7 +147,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
 
     Ef_tot = fill(Z, N)
     Eb_tot = fill(Z, N)
-    Ef_left = RL * F⁻   # field at z=0 of `layer` itself
+    Ef_left = RL * F⁻   # field at z=0
 
     # Required calculation
     want_layer_itself = layers === nothing || layer in layers
@@ -154,7 +170,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
             S11k = Sk[SOneTo(2), SOneTo(2)]; S12k = Sk[SOneTo(2), SVector(3,4)]
             S21k = Sk[SVector(3,4), SOneTo(2)]; S22k = Sk[SVector(3,4), SVector(3,4)]
 
-            if _cond2x2_eq(S11k) > 1 / tol
+            if _cond2x2(S11k) > 1 / tol
                 b₊ = Z
             else
                 b₊ = S11k \ (c₊ - S12k * c₋)
@@ -172,7 +188,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
         Sj = Sall[layer].SLeft
         S22 = Sj[SVector(3,4), SVector(3,4)]
 
-        a₊ = Z   # nothing beyond layer 1
+        a₊ = Z   # nothing incident from -infinity
         a₋ = S22 * F⁻
 
         Ef_tot[1] = Ef_tot[1] + _flush_denormal(a₊)
@@ -183,7 +199,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
             S11k = Sk[SOneTo(2), SOneTo(2)]; S12k = Sk[SOneTo(2), SVector(3,4)]
             S21k = Sk[SVector(3,4), SOneTo(2)]; S22k = Sk[SVector(3,4), SVector(3,4)]
 
-            if _cond2x2_eq(S22k) > 1 / tol
+            if _cond2x2(S22k) > 1 / tol
                 b₋ = Z
             else
                 b₋ = S22k \ (a₋ - S21k * a₊)
@@ -223,35 +239,34 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
     return Ef_tot, Eb_tot
 end
 
-
-# Unit basis inputs for `_cavity_transfer_columns`: column j of [S₊;S₋] is e_j.
-const _E₊ = SMatrix{2,4,ComplexF64}(1,0, 0,1, 0,0, 0,0)
-const _E₋ = SMatrix{2,4,ComplexF64}(0,0, 0,0, 1,0, 0,1)
-
 """
     _cavity_transfer_columns(stack, layer, modes, Sall, Sint; obs_layers, tol=1E-8)
-        -> Dict{Int, SMatrix{4,4,ComplexF64,16}}
-
-The z-independent linear map `T^o` from the source layer's edge seeds
-`[S₊; S₋]` to the modal amplitudes `[Ef; Eb]` of
-each observation layer `o ∈ obs_layers`:
+        
+The z-independent linear map `T^o` from the source layer's (`layer`) edge seeds
+`[S₊; S₋]` to the modal amplitudes `[Ef; Eb]`, for each observation 
+layer `o ∈ obs_layers`. Related by:
 
     [Ef_o; Eb_o] = T^o · [S₊; S₋]
 
-obtained by running `_cavity_resummation` + `_walk_stack` on the 4 unit basis
-inputs at once (exact, since both are linear in `(S₊,S₋)`). `S₊` is the forward
-seed referenced at z=d of `layer`, `S₋` the backward seed at z=0: a source at
-`zpos` with modal amplitudes `(sf, sb)` gives `S₊ = sf∘e^{iQf(d−zpos)}`,
-`S₋ = sb∘e^{−iQb·zpos}` (`ClosedFormField._seed_phases`). Reference conventions
-are `ModalAmp`'s: `Ef_o` at z=0 of layer `o`, `Eb_o` at z=d.
+Obtained by running `_cavity_resummation` + `_walk_stack` on the 4 unit basis
+inputs at once. `S₊` is referenced at z=d,, `S₋` at z=0. Seeds come from
+`ClosedFormField._seed_phases`. For `o == layer` (same layer) the columns 
+are the reflected (cavity) part only. For `o ≠ layer` the columns are 
+`_walk_stack`'s `Ef_tot[o]`/`Eb_tot[o]`.
 
-For `o == layer` (same layer) the columns are the REFLECTED (cavity) part only,
-`[RL·F⁻; RR·F⁺]`; the direct term (`sf·e^{-iQf zpos}` below / `sb·e^{iQb(d-zpos)}`
-above the source) is not part of this map and is added by the caller. For
-`o ≠ layer` the columns are `_walk_stack`'s `Ef_tot[o]`/`Eb_tot[o]`.
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers of the stack + 2 (half-plane and/or substrate).
+  Each entry contains a layer's description. 
+- `layer::Int`: source layer id.
+- `modes::Vector{<:Modes}`: vector of length N carrying the modes info in struct Modes.
+- `Sall::Vector{<:ScatteringM}`: vector of length N carrying the composed, cumulative S-matrices of the stack.
+- `Sint::Vector{<:SMatrix{4,4}}`: vector of length N carrying the single interface and propagation 
+  S-matrices of the stack.
+- `obs_layers`: observation layers targeted for precomputation. Defaults to all layers. 
 
-Added 2026-09-23 for the closed-form (z,z')-separable rewrite
-(`PLAN_closed_form_point_source_rewrite.md` §3, option 1).
+# Returns
+- `Dict{Int, SMatrix{4,4,ComplexF64,16}}`: keys are the observation layers id, and each id contains a 
+  4x4 matrix linking source to answer in the stack. 
 """
 function _cavity_transfer_columns(stack::Vector{<:AbstractLayer}, layer::Int,
                                   modes::Vector{<:Modes}, Sall::Vector{<:ScatteringM},
@@ -259,7 +274,7 @@ function _cavity_transfer_columns(stack::Vector{<:AbstractLayer}, layer::Int,
                                   obs_layers = 1:length(stack), tol::Number = 1E-8)
     N = length(stack)
     @assert 1 <= layer <= N "layer must be a valid stack index"
-    RL, RR, RR_right, Qf, Qb, d = _R_cavity(stack, layer, modes, Sall)
+    RL, RR, RR_right, Qf, Qb, d = _R_cavity(stack, layer, modes, Sall, Sint)
 
     S₊ = layer < N ? _E₊ : zero(_E₊)   # layer==N: no forward seed can exist
     F⁺, F⁻ = _cavity_resummation(S₊, _E₋, RL, RR, Qf, Qb, d, N, layer)
@@ -276,34 +291,32 @@ function _cavity_transfer_columns(stack::Vector{<:AbstractLayer}, layer::Int,
     return T
 end
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Core functions
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 """
-    plane_wave_amp(stack, modes, Sall, Sint, a; side=:top, obs_layers=1:N, include_incident=true, tol=1E-8)
-        -> Dict{Int, ModalAmp{ComplexF64}}
+    plane_wave_amp(stack, modes, Sall, Sint, a; side=:top, obs_layers=1:N, include_incident=true, tol=1E-8)   
     plane_wave_amp(stack, ω, kt, a; kwargs...)
 
-Modal amplitudes in each layer `o ∈ obs_layers` for a single plane wave of in-plane
-wavevector `kt` hitting the stack from one of its half-spaces.
+Helper for a single plane-wane illumination. Computes the modal amplitudes in each
+`o ∈ obs_layers`. `a` holds the incident wave's two modal amplitudes, referenced at one
+of the two edges of the stack:
+  - `side = :top`, forward modes at z=d edge;
+  - `side = :bottom`, backward modes at z=0 edge.
+Closed-form map with the seed `[S₊; S₋] = [a; 0]` or `[0; a]`. The incident wave in the incidence 
+layer is added by default. 
 
-`a` holds the incident wave's two modal amplitudes, referenced AT THE STACK FACE:
-  - `side = :top`    -- forward modes of layer 1, at its z=d edge (the face with layer 2);
-  - `side = :bottom` -- backward modes of layer N, at its z=0 edge (the face with layer N-1).
-Referencing at the face keeps `a` independent of the nominal thickness given to the
-half-space. `a = modes[1].Vf \\ [Ex, Ey, Hx, Hy]` converts a tangential field at the face.
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers of the stack + 2 (half-plane and/or substrate).
+  Each entry contains a layer's description. 
+- `modes::Vector{<:Modes}`: vector of length N carrying the modes info in struct Modes.
+- `Sall::Vector{<:ScatteringM}`: vector of length N carrying the composed, cumulative S-matrices of the stack.
+- `Sint::Vector{<:SMatrix{4,4}}`: vector of length N carrying the single interface and propagation 
+  S-matrices of the stack.
+- `a::AbstractVector`: incident wave two modal amplitudes. 
+- `side::Symbol`: `top` or `bottom`, defaults to the first. 
+- `obs_layers`: observation layers targeted for precomputation. Defaults to all layers. 
 
-This is the closed-form map with the edge seed `[S₊; S₋] = [a; 0]` (top) or `[0; a]`
-(bottom): `[Ef_o; Eb_o] = T^o · [S₊; S₋]`, `T^o = _cavity_transfer_columns(...)`.
-
-Output follows the `ModalAmp` convention in every layer: `Ef` at z=0, `Eb` at z=d. In the
-incidence layer the incident wave is added (`include_incident=true`) after moving it to that
-convention (`a·e^{-iQf·d₁}` top, `a·e^{+iQb·d_N}` bottom); with `include_incident=false`
-only the scattered (reflected) wave is returned there. A plane wave fills the whole
-incidence layer, so these amplitudes hold at every depth of it.
+# Returns
+- `Dict{Int, ModalAmp{ComplexF64}}`: keys are the observation layers id, and each id contains the 
+  modal amplitude Ef and Eb.
 """
 function plane_wave_amp(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
                         Sall::Vector{<:ScatteringM}, Sint::Vector{<:SMatrix{4,4}},

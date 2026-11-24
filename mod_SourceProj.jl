@@ -12,8 +12,7 @@ using StaticArrays
 # J could be split in a scalar way, similar to the Berreman function
 # Lots of potential here.
 
-# Unit dipole current templates (columns/entries = x̂, ŷ, ẑ), Berreman xyz basis.
-# Constant, so hoisted out of the hot per-(layer,k-point) call below.
+# Unit source moment, split between mt and mz
 const _Jt_cols_unit = SMatrix{2,3,ComplexF64}(1,0, 0,1, 0,0)
 const _Jz_row_unit  = SVector{3,ComplexF64}(0,0,1)
 
@@ -21,15 +20,22 @@ const _Jz_row_unit  = SVector{3,ComplexF64}(0,0,1)
 #  Source projection and normalization
 # ─────────────────────────────────────────────────────────────────────────────
 
-
-#TODO Revise if this is still used for "general" sources or not. 
 """
-Projects unit dipole currents along x, y and z onto the Berreman mode basis,
-returning the forward/backward modal seed amplitudes for all three orientations
-at once (one factorization, three right-hand sides).
+    Source_projection_Berreman_xyz(kt, ω, ϵ, modes)
 
-Returns (sif, sib), each a 2x3 matrix whose columns correspond to a unit dipole
+Projects unit moments/currents along x, y and z onto the Berreman mode basis, all at
+once. Returns (sif, sib), each a 2x3 matrix whose columns correspond to a unit dipole
 oriented along x, y and z respectively.
+
+# Arguments
+- `kt::AbstractVector`: in-plane wavevector, conserved through the stack.
+- `ω::Real`: frequency. 
+- `ϵ::Union{AbstractMatrix, AbstractMaterial}`: 3x3 permittivity tensor. 
+- `modes::Modes`: vector of length N carrying the modes info in struct Modes.
+
+# Returns
+- `(SMatrix{2,3,ComplexF64}, SMatrix{2,3,ComplexF64})`: tuple containing forward and backward
+  response to all 3 unit moments. 
 """
 function Source_projection_Berreman_xyz(kt::AbstractVector, ω::Real, ϵ::Union{AbstractMatrix, AbstractMaterial},
                            modes::Modes)

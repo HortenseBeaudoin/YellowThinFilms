@@ -25,7 +25,16 @@ Base.getindex(m::AbstractMaterial, I...) = getindex(m.ϵ, I...)
 Base.size(::AbstractMaterial) = (3, 3)
 Base.size(::AbstractMaterial, d) = d in (1, 2) ? 3 : 1
 
-# Isotropic
+
+"""
+    IsotropicMaterial(ϵ)
+
+Permittivity tensor ϵI of an isotropic material. ϵ may be real or complex;
+real values are promoted to complex.
+
+# Fields
+- `ϵ::UniformScaling{T}`: 3x3 permittivity tensor. 
+"""
 struct IsotropicMaterial{T<:Complex} <: AbstractMaterial
     ϵ::UniformScaling{T}
 end
@@ -33,7 +42,15 @@ end
 IsotropicMaterial(ϵ::Complex) = IsotropicMaterial(UniformScaling(ϵ))
 IsotropicMaterial(ϵ::Real) = IsotropicMaterial(complex(ϵ))
 
-# Uniaxial
+"""
+    UniaxialMaterial(ϵt, ϵz)
+
+Permittivity tensor of a uniaxial material, with principal axis along z. 
+ϵt and ϵz may be real or complex; real values are promoted to complex.
+
+# Fields
+- `ϵ::Diagonal{T, SVector{3,T}}`: 3x3 permittivity tensor, diag(ϵt, ϵt, ϵz). 
+"""
 struct UniaxialMaterial{T<:Complex} <: AbstractMaterial
     ϵ::Diagonal{T, SVector{3,T}}
 end
@@ -45,7 +62,16 @@ end
 
 UniaxialMaterial(ϵt::Real, ϵz::Real) = UniaxialMaterial(complex(ϵt), complex(ϵz))
 
-# Biaxial material
+"""
+    BiaxialMaterial(ϵ::SVector{3,<:Complex})
+    BiaxialMaterial(ϵx, ϵy, ϵz)
+
+Permittivity tensor of a biaxial material, with principal axis along z. 
+Can be called with real or complex values; real values are promoted to complex.
+
+# Fields
+- `ϵ::Diagonal{T, SVector{3,T}}`: 3x3 permittivity tensor, diag(ϵx, ϵy, ϵz). 
+"""
 struct BiaxialMaterial{T<:Complex} <: AbstractMaterial
     ϵ::Diagonal{T, SVector{3,T}}
 end
@@ -56,7 +82,16 @@ BiaxialMaterial(ϵx::Complex, ϵy::Complex, ϵz::Complex) =
 BiaxialMaterial(ϵx::Real, ϵy::Real, ϵz::Real) =
     BiaxialMaterial(complex(ϵx), complex(ϵy), complex(ϵz))
 
-# Gyrotropic material
+"""
+    GyrotropicMaterial(ϵ::AbstractMatrix)
+
+Permittivity tensor of a gyrotropic material, with principal axis along z. 
+ϵxy = -ϵyx =ig with the exp(-iωt) convention.
+Can be called with real or complex values; real values are promoted to complex.
+
+# Fields
+- `ϵ::SMatrix{3, 3, T, 9}`: 3x3 permittivity tensor. 
+"""
 struct GyrotropicMaterial{T<:Complex} <: AbstractMaterial
     ϵ::SMatrix{3,3,T,9}
 end
@@ -68,34 +103,72 @@ GyrotropicMaterial(ϵ::AbstractMatrix{<:Complex}) = GyrotropicMaterial(SMatrix{3
 # Layer related definitions
 abstract type AbstractLayer end
 
+"""
+    FlatOpticalLayer(ϵ, d)
+
+Optical layer for which μ = I. 
+
+# Fields
+- `ϵ::Tϵ`: Permittivity tensor of the material, with type depending on the material's class. 
+- `d::Float64`: Thickness of the layer, in λ₀. 
+"""
 struct FlatOpticalLayer{Tϵ<:AbstractMaterial} <: AbstractLayer
     ϵ::Tϵ
     d::Float64
 end
 
+"""
+    FlatLayer(ϵ, d)
+
+Optical layer for which μ ≠ I. 
+
+# Fields
+- `ϵ::Tϵ`: Permittivity tensor of the material, with type depending on the material's class. 
+- `μ::Tμ`: Permeability tensor of the material. 
+- `d::Float64`: Thickness of the layer, in λ₀. 
+"""
 struct FlatLayer{Tϵ<:AbstractMaterial, Tμ<:AbstractMaterial} <: AbstractLayer
     ϵ::Tϵ
     μ::Tμ
     d::Float64
 end
 
+
 # Modes related definitions
 const _Modes = Tuple{SMatrix{4,2,ComplexF64,8}, SMatrix{4,2,ComplexF64,8}, SVector{2,ComplexF64}}
 
+"""
+    Modes(Vf, Vb, Wf, Wb, Qf, Qb)
+
+Modes in a layer, described by their eigenvalues and eigenvectors. 
+There is always 4 modes propagating in multilayers, so elements are static arrays. 
+
+# Fields
+- `Vf::SMatrix{4, 2, ComplexF64, 8}`: Forward-going eigenvectors
+- `Vb::SMatrix{4, 2, ComplexF64, 8}`: Backward-going eigenvectors
+- `Wf::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wf = R4s * Vf
+- `Wb::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wb = R4s * Vb
+- `Qf::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or forward-going modes
+- `Qb::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or backward-going modes
+"""
 struct Modes
-    Vf::SMatrix{4,2,ComplexF64,8}
-    Vb::SMatrix{4,2,ComplexF64,8}
-    Wf::SMatrix{4,2,ComplexF64,8}
-    Wb::SMatrix{4,2,ComplexF64,8}
-    Qf::SVector{2,ComplexF64}
-    Qb::SVector{2,ComplexF64}
+    Vf::SMatrix{4, 2, ComplexF64, 8}
+    Vb::SMatrix{4, 2, ComplexF64, 8}
+    Wf::SMatrix{4, 2, ComplexF64, 8}
+    Wb::SMatrix{4, 2, ComplexF64, 8}
+    Qf::SVector{2, ComplexF64}
+    Qb::SVector{2, ComplexF64}
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Wraps modes out of eigen into Static Arrays.
+"""
+    Modes(Vf, Vb, Wf, Wb, Qf, Qb)
+
+Wraps modes out of eigen into Static Arrays.
+"""
 function Modes(Vf::AbstractMatrix, Vb::AbstractMatrix, Wf::AbstractMatrix, Wb::AbstractMatrix,
                Qf::AbstractVector, Qb::AbstractVector)
     Modes(SMatrix{4,2,ComplexF64}(Vf), SMatrix{4,2,ComplexF64}(Vb),
@@ -103,11 +176,51 @@ function Modes(Vf::AbstractMatrix, Vb::AbstractMatrix, Wf::AbstractMatrix, Wb::A
           SVector{2,ComplexF64}(Qf), SVector{2,ComplexF64}(Qb))
 end
 
-
 # One allocation-free instance of vacuum μ, for FlatOpticalLayer
 const _μ_Identity = IsotropicMaterial(one(ComplexF64))
 _layer_μ(stack::FlatOpticalLayer) = _μ_Identity
 _layer_μ(stack::AbstractLayer) = stack.μ
+
+
+# The three following helper functions exist for azimuthally symmetric stack, with asymmetric sources
+"""
+    _is_azimuthally_symmetric_stack(stack::Vector{<:AbstractLayer})
+
+Check the azimuthal symmetry of the whole stack, not just one layer. 
+All layers have to be isotropic of uniaxial, axis has to be aligned, μ has to be diagonal.
+"""
+function _is_azimuthally_symmetric_stack(stack::Vector{<:AbstractLayer})
+    for lay in stack
+        lay.ϵ isa Union{IsotropicMaterial,UniaxialMaterial} || return false
+        μ = hasproperty(lay, :μ) ? lay.μ : nothing
+        (μ === nothing || μ isa IsotropicMaterial) || return false
+    end
+    return true
+end
+
+"""
+    _Rot4(φ)
+
+Standard rotation matrix for angle φ. 
+"""
+function _Rot4(φ::Float64)
+    c, s = cos(φ), sin(φ)
+    return SMatrix{4,4,ComplexF64}(c, s, 0, 0,
+                                    -s, c, 0, 0,
+                                    0, 0, c, s,
+                                    0, 0, -s, c)
+end
+
+"""
+    _rotate_modes(modes, φ)
+
+Returns rotated modes and associated unchanged eigenvalues Qf, Qb.
+Valid when _is_azimuthally_symmetric_stack(stack) holds
+"""
+_rotate_modes(modes::Vector{<:Modes}, φ::Float64) = begin
+    R = _Rot4(φ)
+    [Modes(R * m.Vf, R * m.Vb, R * m.Wf, R * m.Wb, m.Qf, m.Qb) for m in modes]
+end
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Core functions
@@ -117,10 +230,8 @@ _layer_μ(stack::AbstractLayer) = stack.μ
     _berreman_core(ϵ, μ, ω, k)
 
 Builds the 4x4 Berreman matrix from a layer's 3x3 ϵ/μ tensors.
-
 """
 function _berreman_core(ϵ, μ, ω, k)
-
     T = promote_type(eltype(ϵ), eltype(μ), eltype(k), typeof(ω))
 
     ϵ11=T(ϵ[1,1]); ϵ12=T(ϵ[1,2]); ϵ21=T(ϵ[2,1]); ϵ22=T(ϵ[2,2])
@@ -154,7 +265,7 @@ function _berreman_core(ϵ, μ, ω, k)
     σμ1 = μ13 * denomμ;  σμ2 = μ23 * denomμ
 
     t2_1 = -conj(k2); t2_2 = conj(k1)
-    t3_1 = iω*k1; t3_2 = iω*k2
+    t3_1 = iω * k1; t3_2 = iω * k2
 
     Rσμ1 = σμ2; Rσμ2 = -σμ1
     Rσϵ1 = σϵ2; Rσϵ2 = -σϵ1
@@ -192,84 +303,55 @@ function _berreman_core(ϵ, μ, ω, k)
     return Matrix(Bs)
 end
 
-
-
 """
     _eigen_QV(layer, ω, kx, ky)
+    _eigen_QV(ϵ::AbstractMaterial, μ::AbstractMaterial, ω::Number, kx::Number, ky::Number)
+    _eigen_QV(ϵ::Union{IsotropicMaterial,UniaxialMaterial}, μ::IsotropicMaterial,
+                ω::Number, kx::Number, ky::Number)
 
-General dispatcher between closed-form Q,V calculation or mode solving through Berreman's matrix.
-
+Returns the eigenvalues and eigenvectors of a layer for a given kₜ. 
+Dispatches between closed-form QV calculation or eigen solve of Berreman's matrix based on material.
 """
 _eigen_QV(layer::AbstractLayer, ω::Number, kx::Number, ky::Number) =
     _eigen_QV(layer.ϵ, _layer_μ(layer), ω, kx, ky)
 
-
+    
 function _eigen_QV(ϵ::AbstractMaterial, μ::AbstractMaterial, ω::Number, kx::Number, ky::Number)
     B = _berreman_core(ϵ, μ, ω, SVector{2}(kx, ky))
     Q, V = eigen(B)
     return SVector{4,ComplexF64}(Q), SMatrix{4,4,ComplexF64}(V)
 end
 
-
-
-# TODO Recheck and validate this properly, it works but still
-"""
-Closed-form (Q,V) for ϵ isotropic or uniaxial (c-axis along ẑ, i.e. the layer
-normal -- the only geometry `UniaxialMaterial`'s own constructor can express)
-with isotropic μ. Standard TE(ordinary)/TM(extraordinary) decomposition:
-ŝ = ẑ×k̂_t (TE polarization direction, Ez≡0), p-direction in the (k̂_t,ẑ)
-plane (TM, Hz≡0); `φ = atan(ky,kx)` (arbitrary at kρ=0, harmless -- the
-construction stays exactly linearly independent there regardless of the
-convention chosen, unlike a numerically degenerate `eigen()` call). The
-prefactors `A = 1/(ωμ)`, `B = 1/(ωϵt)` and the exact sign pattern below were
-fixed by directly verifying `Berreman_B*Ψ - Q*Ψ ≈ 0` (machine precision, not
-merely `Identity_check`-level) against THIS file's own `_berreman_core`
-across isotropic/uniaxial materials (including negative/hyperbolic ϵz),
-on/off axis, and on/near/above each material's own light line -- see
-`handoff_fixed_grid_green_apply.md`'s Module 4a discussion (2026-09-01) for
-the validation. `kzo`/`kze` use `sqrt` of a `Complex` argument throughout
-(never a bare real `sqrt`), so evanescent (imaginary kz), lossy, and
-negative-ϵz branches are all handled by the same principal-branch formula --
-correctness does not depend on which branch `sqrt` picks, since both signs of
-each of `kzo`,`kze` are returned as separate eigenpairs and left to the
-UNCHANGED forward/backward `Pz`/`imag(Q)` sort below to classify, exactly as
-`eigen()`'s arbitrarily-ordered output already required.
-
-Isotropic is the exact degenerate case `ϵt=ϵz`: `kzo≡kze`, TE/TM become the
-same eigenvalue with two linearly independent eigenvectors (confirmed via
-`Identity_check`-equivalent completeness, not just individually-valid
-eigenvectors) -- correct, expected, and NOT specially cased.
-"""
+# TODO : Review the equations in here, changed Bn for C, make sure it didn't break everything 
 function _eigen_QV(ϵ::Union{IsotropicMaterial,UniaxialMaterial}, μ::IsotropicMaterial,
                     ω::Number, kx::Number, ky::Number)
     ϵt = ComplexF64(ϵ[1,1]); ϵz = ComplexF64(ϵ[3,3]); μr = ComplexF64(μ[1,1])
     ωc = ComplexF64(ω)
     kρ = hypot(Float64(kx), Float64(ky))
-    φ  = kρ == 0 ? 0.0 : atan(Float64(ky), Float64(kx))
+    φ = kρ == 0 ? 0.0 : atan(Float64(ky), Float64(kx))
     cφ, sφ = cos(φ), sin(φ)
 
     kzo = sqrt(ωc^2 * ϵt * μr - kρ^2)
     kze = sqrt(ϵt * (ωc^2 * μr - kρ^2 / ϵz))
 
     A = 1 / (ωc * μr)
-    Bn = 1 / (ωc * ϵt)
+    C = 1 / (ωc * ϵt)
 
     ΨTEf = SVector{4,ComplexF64}(-sφ, cφ, -A * kzo * cφ, -A * kzo * sφ)
     ΨTEb = SVector{4,ComplexF64}(-sφ, cφ,  A * kzo * cφ,  A * kzo * sφ)
-    ΨTMf = SVector{4,ComplexF64}(Bn * kze * cφ,  Bn * kze * sφ, -sφ, cφ)
-    ΨTMb = SVector{4,ComplexF64}(-Bn * kze * cφ, -Bn * kze * sφ, -sφ, cφ)
+    ΨTMf = SVector{4,ComplexF64}(C * kze * cφ,  C * kze * sφ, -sφ, cφ)
+    ΨTMb = SVector{4,ComplexF64}(-C * kze * cφ, -C * kze * sφ, -sφ, cφ)
 
     Qs = SVector{4,ComplexF64}(kzo, -kzo, kze, -kze)
     Vs = hcat(ΨTEf, ΨTEb, ΨTMf, ΨTMb)
     return Qs, Vs
 end
 
-
 """
     _modes_layer(layer, ω, kx, ky; tol=sqrt(eps(Float64)))
 
-Shared core for EVERY material type: obtain `(Q,V)` from `_eigen_QV`, 
-then sort into forward/backward branches by power flow / decay direction. 
+Obtain (Q, V), the eigenmodes and eigenvectors of a layer from _eigen_QV,
+then sort then into forward/backward based on power in z and/or decay direction. 
 """
 function _modes_layer(layer::AbstractLayer, ω::Number, kx::Number, ky::Number;
                        tol::Real=sqrt(eps(Float64)))
@@ -325,20 +407,20 @@ function _modes_layer(layer::AbstractLayer, ω::Number, kx::Number, ky::Number;
     return (SMatrix(Vf), SMatrix(Wf), SVector(Qf)), (SMatrix(Vb), SMatrix(Wb), SVector(Qb))
 end
 
-
 """
     _match_modes(modes_A, modes_B; eigpenalty=0.0)
-
+    
+Matches modes between two layers by looking at the maximum overlap between the eigenvectors, Wa'*Vb.
 """
 function _match_modes(modes_A::_Modes, modes_B::_Modes; eigpenalty::Real = 0.0)
     _, Wa, Qa = modes_A
     Vb, Wb, Qb = modes_B
 
     C = Wa' * Vb
-    score_id   = abs2(C[1,1]) + abs2(C[2,2])
+    score_id = abs2(C[1,1]) + abs2(C[2,2])
     score_swap = abs2(C[1,2]) + abs2(C[2,1])
     if eigpenalty != 0.0
-        score_id   -= eigpenalty*(abs2(Qa[1]-Qb[1]) + abs2(Qa[2]-Qb[2]))
+        score_id -= eigpenalty*(abs2(Qa[1]-Qb[1]) + abs2(Qa[2]-Qb[2]))
         score_swap -= eigpenalty*(abs2(Qa[1]-Qb[2]) + abs2(Qa[2]-Qb[1]))
     end
     if score_swap > score_id
@@ -348,18 +430,16 @@ function _match_modes(modes_A::_Modes, modes_B::_Modes; eigpenalty::Real = 0.0)
     end
 end
 
-
 """
     _modes_stack_core(stack, ω, kx, ky)
 
-Shared per-stack mode solver. Calls _modes_layer(layer, ω, kx, ky) per layer, 
-then _match_modes aligns each subsequent layer's to layer 1's ordering.
+Computes modes in each layer of the stack, 
+then _match_modes aligns them based on layer 1's ordering.
 """
 function _modes_stack_core(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number, ky::Number)
     N = length(stack)
 
-    # Keyed by object identity (objectid), not material value: layers that share
-    # the same ϵ/μ INSTANCE hit the cache at the cost of two cheap pointer hashes.
+    # Make sure that mode solving is run once per material, not per layer.
     raw_cache = Dict{Tuple{UInt,UInt}, Tuple{_Modes, _Modes}}()
     solved(layer) = get!(raw_cache, (objectid(layer.ϵ), objectid(_layer_μ(layer)))) do
         _modes_layer(layer, ω, kx, ky)
@@ -391,15 +471,22 @@ function _modes_stack_core(stack::Vector{<:AbstractLayer}, ω::Number, kx::Numbe
     return smat
 end
 
-
 """
-    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, k∥)
+    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number)
+    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, k::AbstractVector)
+    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kρ::Number, ϕ::Number)
 
 Returns the ordered and aligned modes and k⟂ in each layer of a stack. 
 
 # Arguments
-- `k∥`: can be called as a single kₓ (::Number) value, as a vector [kx; ky] (::AbstractVector) 
-  or as two arguments kρ and ϕ (::Number, ::Number).
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers of the stack + 2 (half-plane and/or substrate).
+  Each entry contains a layer's description. 
+- `ω`: frequency. 
+- `k∥`: transverse, conserved, wavevector. Can be called as a single kₓ (::Number) value, as a vector [kx; ky] (::AbstractVector) 
+  or as two arguments kρ and ϕ (::Number, ::Number).  
+
+# Returns
+- `Vector{Modes}(undef, N)`: of length N containing Modes, the struct containing eigenmodes and eigenvectors.
 """
 Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number) =
     _modes_stack_core(stack, ω, kx, zero(kx))
@@ -411,75 +498,5 @@ end
 
 Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kρ::Number, ϕ::Number) =
     _modes_stack_core(stack, ω, kρ*cos(ϕ), kρ*sin(ϕ))
-
-
-"""
-Stronger than a `ky -> -ky` mirror: true iff every layer's `(ϵ,μ)` pair
-dispatches to `_eigen_QV`'s CLOSED-FORM isotropic/uniaxial branch (isotropic
-or uniaxial `ϵ`, c-axis along ẑ, AND isotropic `μ` -- exactly the
-`_eigen_QV(ϵ::Union{IsotropicMaterial,UniaxialMaterial}, μ::IsotropicMaterial,
-...)` method above, never the general Berreman-`eigen()` fallback). For such
-a stack the WHOLE Berreman problem is invariant under an arbitrary in-plane
-rotation about ẑ -- so a single stack solve at φ=0 suffices for every φ on a
-2D `(kρ,φ)` grid: see `_rotate_modes`'s own docstring for the transform and
-its empirical verification.
-"""
-function _is_azimuthally_symmetric_stack(stack::Vector{<:AbstractLayer})
-    for lay in stack
-        lay.ϵ isa Union{IsotropicMaterial,UniaxialMaterial} || return false
-        μ = hasproperty(lay, :μ) ? lay.μ : nothing
-        (μ === nothing || μ isa IsotropicMaterial) || return false
-    end
-    return true
-end
-
-"""
-The exact transformation of a layer's Berreman eigenmodes under the in-plane
-rotation `(kx,ky) = (kρcos(φ),kρsin(φ))` about ẑ, valid whenever
-`_is_azimuthally_symmetric_stack(stack)` holds: `Vf/Vb/Wf/Wb -> Rot4(φ)*(...)`,
-`Qf/Qb` unchanged, with `Rot4(φ) = blockdiag(R(φ),R(φ))`, `R(φ)` the ordinary
-2x2 rotation -- the SAME `R(φ)` applied to the `(Ex,Ey)`-like row pair (1,2)
-and, independently, to the `(Hx,Hy)`-like row pair (3,4). Read directly off
-`_eigen_QV`'s own closed-form `(ΨTEf,ΨTEb,ΨTMf,ΨTMb)` formulas (each is
-exactly `Rot4(φ)` applied to its own φ=0 value) and `Qs=(kzo,-kzo,kze,-kze)`
-depending on kρ alone -- so `_modes_layer`'s forward/backward sort (driven by
-`Pz=real(Vs'Ws)/4` and `imag(Qs)`, both invariant since `Rot4(φ)` is real
-orthogonal, `Rot4(φ)'*Rot4(φ)=I`) picks the SAME columns at every φ, and
-`_modes_stack_core`'s `_match_modes` overlap `Wa'*Vb` is likewise invariant
-(`(Rot4 Wa)'*(Rot4 Vb) = Wa'*Vb`) -- so the WHOLE aligned `Vector{Modes}`
-(every layer, already continuity-matched) transforms by one common `Rot4(φ)`
-("uniform transform, matching survives").
-
-Downstream: `S_all_ingredients`/`S_all_Matrix` applied to a uniformly-
-`Rot4(φ)`-rotated mode set reproduce their true-φ values EXACTLY (same
-bilinear-form cancellation) -- `Sint`/`Sall`
-built at φ=0 are reused unchanged for every φ, not just mirror-paired ones.
-`Source_projection_Berreman_xyz`, fed the ACTUAL `kt=(kρcosφ,kρsinφ)` (not a
-rotated one) together with the rotated modes, reproduces the true per-φ
-projection exactly too -- it is cheap enough (one 4x4 solve per layer, no
-stack-wide Redheffer scan) that it is simply recomputed at every φ rather
-than given its own mirror-style shortcut.
-
-Verified empirically (not merely derived): isotropic, uniaxial, and a
-5-layer high-contrast/lossy isotropic stack, 4 kρ x 7 φ spanning all four
-quadrants -- max relative disagreement between a direct φ-solve and this
-Rot4(φ)-transformed φ=0 solve was ~1e-15-1e-16 (floating-point noise) for
-modes, `Sint`, `Sall`, and the source projection alike
-(`verify_mode_rotation.jl`, 2026-09-21) -- the same "confirmed to machine
-zero" standard the mirror trick itself was held to.
-"""
-function _Rot4(φ::Float64)
-    c, s = cos(φ), sin(φ)
-    return SMatrix{4,4,ComplexF64}(c, s, 0, 0,
-                                    -s, c, 0, 0,
-                                    0, 0, c, s,
-                                    0, 0, -s, c)
-end
-
-_rotate_modes(modes::Vector{<:Modes}, φ::Float64) = begin
-    R = _Rot4(φ)
-    [Modes(R * m.Vf, R * m.Vb, R * m.Wf, R * m.Wb, m.Qf, m.Qb) for m in modes]
-end
-
 
 end

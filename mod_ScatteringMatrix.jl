@@ -15,15 +15,29 @@ using StaticArrays
 
 const SI = SMatrix{4,4,ComplexF64}(I)
 
+"""
+    ScatteringM(SLeft, SRight)
+
+Left- and right-looking cumulated scattering matrix. 
+
+# Fields
+- `SLeft::SMatrix{4, 4, T, 16}`: Left-looking scattering matrix.
+- `SRight::SMatrix{4, 4, T, 16}`: Right-looking scattering matrix.
+"""
 struct ScatteringM{T}
-    SLeft::SMatrix{4,4,T,16}
-    SRight::SMatrix{4,4,T,16}
+    SLeft::SMatrix{4, 4, T, 16}
+    SRight::SMatrix{4, 4, T, 16}
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Core functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+"""
+    _S_Interface_Matrix(Vf_A, Vb_A, Vf_B, Vb_B)
+
+Returns the S-matrix of a single interface between material A and B. 
+"""
 function _S_Interface_Matrix(Vf_A::AbstractMatrix, Vb_A::AbstractMatrix,
                              Vf_B::AbstractMatrix, Vb_B::AbstractMatrix)
 
@@ -46,7 +60,11 @@ function _S_Interface_Matrix(Vf_A::AbstractMatrix, Vb_A::AbstractMatrix,
     return SMatrix{4,4,T}(S)
 end
 
+"""
+    _SProp(layer, Qf, Qb)
 
+Returns the S-matrix of propagation within a layer, given its eigenmodes Qf, Qb. 
+"""
 function _SProp(layer::AbstractLayer, Qf::AbstractVector, Qb::AbstractVector)
 
     d = layer.d
@@ -61,7 +79,12 @@ function _SProp(layer::AbstractLayer, Qf::AbstractVector, Qb::AbstractVector)
     return SMatrix{4,4,Tc}(Diagonal(SVector{4,Tc}(φf1, φf2, φb1, φb2)))
 end
 
+"""
+    _Redheffer(S1, S2)
 
+Composes systems S1 and S2 by 2x2 block, through the Redheffer star product. 
+Implemented for static matrices of size 4x4. 
+"""
 function _Redheffer(S1::SMatrix{4,4}, S2::SMatrix{4,4})
 
     T = promote_type(eltype(S1), eltype(S2))
@@ -86,10 +109,18 @@ end
 
 
 """
-    S_all_ingredients(stack::AbstractLayer, modes::Vector{<:Modes})
+    S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
 
-Returns a tuple containing the S-Matrix of all interface and all propagation
-regions of the stack.
+Returns a tuple containing the S-Matrices of all interface and all propagation
+regions of the stack. 
+
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, each entry contains a layer's description. 
+- `modes::Vector{<:Modes}`: of length N containing Modes, the struct containing eigenmodes and eigenvectors.
+
+# Returns
+- `(Sint, Sprop)`: where Sint is a vector of length N containing interface S-matrices, 
+  and Sprop is a vector of length N containing propagation S-matrices.
 """
 function S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
     N = length(stack)
@@ -108,7 +139,25 @@ function S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes
     return Sint, Sprop
 end
 
+"""
+    S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
+    S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
+                 Sint::Vector{<:SMatrix{4,4}}, Sprop::Vector{<:SMatrix{4,4}})
 
+Composes the cumulative S-Matrices through the stack, from the left and right,
+using the Redheffer Star Product. Matrices are referenced at the left interface of each layer.
+Requires precomputed modes. If ingredient Sint and Sprop are not provided, computes them. 
+
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, each entry contains a layer's description. 
+- `modes::Vector{<:Modes}`: of length N containing Modes, the struct containing eigenmodes and eigenvectors.
+- `Sint::Vector{<:SMatrix{4,4}}`: of length N containing interface S-matrices
+- `Sprop::Vector{<:SMatrix{4,4}}`: of length N containing propagation S-matrices
+
+# Returns
+- `Vector{ScatteringM{Tc}}(undef, N)`: of length N containing ScatteringM, 
+  the struct containing left and right cumulative S-matrices.
+"""
 function S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
                       Sint::Vector{<:SMatrix{4,4}}, Sprop::Vector{<:SMatrix{4,4}})
     
@@ -141,17 +190,9 @@ function S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
     return smat
 end
 
-
-"""
-    S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
-
-Composes the cumulative S-Matrices through the stack, from the left and right,
-using the Redheffer Star Product. Requires precomputed modes. 
-"""
 function S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
     Sint, Sprop = S_all_ingredients(stack, modes)
     return S_all_Matrix(stack, modes, Sint, Sprop)
 end
-
 
 end

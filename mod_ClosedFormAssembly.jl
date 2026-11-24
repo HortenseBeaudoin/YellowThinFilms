@@ -31,8 +31,8 @@ module ClosedFormAssembly
 export ClosedFormGreen, build_closed_form_green, apply_ghat, apply_closed_form, grid_offsets
 export closed_form_field, precompute_ghats!, padded_offsets
 
-import ..SourceHandling: Sheet, Dipole
-import ..UniformSource: point_current_sheet
+import ..SourceHandling: Dipole
+import ..Sheets: Sheet, point_current_sheet
 import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D
 import ..ClosedFormField: closed_form_G
 
@@ -152,11 +152,11 @@ function _check_sheet(grid::NamedTuple, sheet::Sheet, who::String)
         "$((grid.Nx, grid.Ny, 3)) -- build the sheet against this SAME grid (e.g. `point_current_sheet(grid, ...)`).")
 end
 
-"`fft` of `weight·J`, zero-padded to `(Px, Py, 3)`."
+"`fft` of `J`, zero-padded to `(Px, Py, 3)`."
 function _source_spectrum(grid::NamedTuple, sheet::Sheet)
     Px, Py = _padded_size(grid)
     Ĵ = zeros(ComplexF64, Px, Py, 3)
-    @views Ĵ[1:grid.Nx, 1:grid.Ny, :] .= sheet.weight .* sheet.J
+    @views Ĵ[1:grid.Nx, 1:grid.Ny, :] .= sheet.J
     _plan(:fft, Ĵ) * Ĵ
     return Ĵ
 end
