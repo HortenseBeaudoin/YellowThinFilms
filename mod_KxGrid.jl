@@ -4,7 +4,7 @@ export branch_points, layer_light_lines, build_kphi_grid
 export thinnest_finite_layer, evanescent_umax, decay_cutoff, tail_bound
 export adaptive_kx_grid, kronrod_rule, graded_panels, gl_rule, halve_panels
 
-import ..ModeSolver: AbstractLayer, _layer_μ
+import ..Materials: AbstractLayer, _layer_μ
 using FastGaussQuadrature
 using LinearAlgebra: norm, det, inv
 using StaticArrays

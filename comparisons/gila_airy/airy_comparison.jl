@@ -13,9 +13,10 @@
 using GilaElectromagnetics, LinearAlgebra, StaticArrays, Printf, Plots
 
 const ROOT = joinpath(@__DIR__, "..", "..")
+include(joinpath(ROOT, "mod_Materials.jl"))
 include(joinpath(ROOT, "mod_ModeSolver.jl"))
 include(joinpath(ROOT, "mod_ScatteringMatrix.jl"))
-using .ModeSolver, .ScatteringMatrix
+using .Materials, .ModeSolver, .ScatteringMatrix
 
 const k0 = 2π
 const Δ = 1//64                 # Gila cell, as in the tutorial

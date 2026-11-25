@@ -3,7 +3,8 @@ module FieldSolver
 export ModalAmp, plane_wave_amp
 export _cavity_transfer_columns
 
-import ..ModeSolver: AbstractLayer, Modes, Modes_Stack
+import ..Materials: AbstractLayer
+import ..ModeSolver: Modes, Modes_Stack
 import ..ScatteringMatrix: ScatteringM, _SProp, _Redheffer, S_all_ingredients, S_all_Matrix
 
 

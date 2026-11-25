@@ -2,7 +2,7 @@
 #
 #   include("ClosedForm.jl")
 #
-# Foundation: ModeSolver (Berreman eigenmodes), ScatteringMatrix (Redheffer),
+# Foundation: Materials (ε/μ tensors, layers), ModeSolver (Berreman eigenmodes), ScatteringMatrix (Redheffer),
 # SourceHandling (Dipole), SourceProjection (point seed),
 # FieldSolver (cavity resummation + stack walk, `_cavity_transfer_columns`),
 # KxGrid (light lines, adaptive Gauss–Kronrod and graded Gauss–Legendre rules),
@@ -13,11 +13,11 @@
 # z-structured operator of one source layer: Toeplitz/Hankel same layer, dense otherwise).
 # See PLAN_closed_form_point_source_rewrite.md and STATUS_closed_form_rewrite.md.
 
-for f in ("mod_ModeSolver.jl", "mod_ScatteringMatrix.jl", "mod_Sources.jl", "mod_SourceProj.jl",
+for f in ("mod_Materials.jl", "mod_ModeSolver.jl", "mod_ScatteringMatrix.jl", "mod_Sources.jl", "mod_SourceProj.jl",
           "mod_FieldSolver.jl", "mod_KxGrid.jl", "mod_KSpaceFeatures.jl", "mod_Sheets.jl",
           "mod_CavityTransfer.jl", "mod_ClosedFormField.jl", "mod_ClosedFormAssembly.jl", "mod_ClosedFormGrid.jl",
           "mod_GreenOperator.jl")
     include(joinpath(@__DIR__, f))
 end
-using .ModeSolver, .ScatteringMatrix, .SourceHandling, .SourceProjection, .FieldSolver, .KxGrid, .KSpaceFeatures, .Sheets
+using .Materials, .ModeSolver, .ScatteringMatrix, .SourceHandling, .SourceProjection, .FieldSolver, .KxGrid, .KSpaceFeatures, .Sheets
 using .CavityTransfer, .ClosedFormField, .ClosedFormAssembly, .ClosedFormGrid, .GreenOperator

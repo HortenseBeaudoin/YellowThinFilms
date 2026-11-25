@@ -49,7 +49,8 @@ export AbstractCavityTransferCache, CavityTransferCache1D, build_cavity_transfer
 export CavityTransferCache2D, build_cavity_transfer_2d
 export _mode_field_core, _mode_field_eps
 
-import ..ModeSolver: AbstractLayer, Modes, Modes_Stack, _is_azimuthally_symmetric_stack, _rotate_modes
+import ..Materials: AbstractLayer, _is_azimuthally_symmetric_stack
+import ..ModeSolver: Modes, Modes_Stack, _rotate_modes
 import ..ScatteringMatrix: S_all_ingredients, S_all_Matrix
 import ..SourceProjection: Source_projection_Berreman_xyz
 import ..FieldSolver: _cavity_transfer_columns

@@ -2,7 +2,8 @@ module SourceProjection
 
 export Source_projection_Berreman_xyz
 
-import ..ModeSolver: Modes, R2s, AbstractMaterial
+import ..Materials: AbstractMaterial
+import ..ModeSolver: Modes, R2s
 using StaticArrays
 
 

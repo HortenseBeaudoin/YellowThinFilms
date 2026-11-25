@@ -356,7 +356,8 @@ Load everything with `include("ClosedForm.jl")`.
 
 | File | Role |
 |---|---|
-| `mod_ModeSolver.jl` | Berreman eigenmodes (`Modes_Stack`; closed form for iso/uniaxial, `_berreman_core` + `eigen` otherwise), materials, `_is_azimuthally_symmetric_stack`, `_rotate_modes`. |
+| `mod_Materials.jl` | Material ε/μ tensors (`IsotropicMaterial`, `UniaxialMaterial`, `BiaxialMaterial`, `GyrotropicMaterial`), layers (`FlatOpticalLayer`, `FlatLayer`), `_layer_μ`, `_is_azimuthally_symmetric_stack`. Split out of ModeSolver 2026-11-24. |
+| `mod_ModeSolver.jl` | Berreman eigenmodes (`Modes_Stack`; closed form for iso/uniaxial, `_berreman_core` + `eigen` otherwise), `_rotate_modes`. |
 | `mod_ScatteringMatrix.jl` | Interface/propagation S-matrices, Redheffer star product (`S_all_ingredients`, `S_all_Matrix`). |
 | `mod_Sources.jl` | `SourceDef`, `ModalSeed`, `Dipole`/`Dipole_constructor`, `Sheet`. |
 | `mod_SourceProj.jl` | `Source_projection_Berreman_xyz`: the point seed. |

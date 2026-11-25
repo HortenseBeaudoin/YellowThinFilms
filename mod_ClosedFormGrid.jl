@@ -80,7 +80,7 @@ module ClosedFormGrid
 
 export point_kx_grid, point_kρ_grid_2d, chunked_2d, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
 
-import ..ModeSolver: AbstractLayer, _is_azimuthally_symmetric_stack
+import ..Materials: AbstractLayer, _is_azimuthally_symmetric_stack
 import ..KxGrid: adaptive_kx_grid, kronrod_rule, branch_points, build_kphi_grid, thinnest_finite_layer,
                 decay_cutoff, tail_bound, gl_rule, halve_panels
 import ..KSpaceFeatures: kspace_features, fixed_kρ_rule, adaptive_seeds, choose_engine, _grade_for

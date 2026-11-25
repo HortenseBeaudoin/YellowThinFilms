@@ -30,7 +30,8 @@ module KSpaceFeatures
 
 export material_class, choose_engine, real_axis_poles, kspace_features, fixed_kρ_rule, adaptive_seeds
 
-import ..ModeSolver: AbstractLayer, Modes_Stack, _layer_μ, _is_azimuthally_symmetric_stack
+import ..Materials: AbstractLayer, _layer_μ, _is_azimuthally_symmetric_stack
+import ..ModeSolver: Modes_Stack
 import ..ScatteringMatrix: S_all_Matrix, S_all_ingredients, _Redheffer
 import ..FieldSolver: _SProp
 import ..KxGrid: layer_light_lines, decay_cutoff, tail_bound, graded_panels, gl_rule, _dedup, _tensor3

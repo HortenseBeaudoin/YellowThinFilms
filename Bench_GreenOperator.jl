@@ -164,7 +164,7 @@ for sz in size_order, δ in losses, (name, mk) in stacks
 
     GC.gc()
     local groups, ginfo
-    rtol = ModeSolver._is_azimuthally_symmetric_stack(st) ? BOX_RTOL : BOX_RTOL_GROUPED
+    rtol = Materials._is_azimuthally_symmetric_stack(st) ? BOX_RTOL : BOX_RTOL_GROUPED
     t_grid = @elapsed try
         groups, ginfo = box_kρ_grid_grouped(st, ω, src; box=(p.Δ, p.Δ, p.Δ), N_phi=BOX_NPHI,
                                             rtol=rtol, kρ_cap=BOX_KCAP, ρ_far=p.L, maxevals=BOX_MAXEV,

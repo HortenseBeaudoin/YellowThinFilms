@@ -56,7 +56,8 @@ module GreenOperator
 export LayerGreenOperator, build_layer_operator, build_layer_operator_grouped, apply_operator, dipole_moments, operator_summary
 export ZSkeleton, z_skeletons, z_skeletons_grouped
 
-import ..ModeSolver: _is_azimuthally_symmetric_stack, _modes_layer, IsotropicMaterial, UniaxialMaterial, AbstractLayer
+import ..Materials: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial, AbstractLayer
+import ..ModeSolver: _modes_layer
 import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G
 import ..ClosedFormAssembly: padded_offsets, _plan, _padded_size

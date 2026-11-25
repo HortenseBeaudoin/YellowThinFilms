@@ -4,7 +4,8 @@ export ScatteringM
 export S_all_Matrix
 export S_all_ingredients
 
-import ..ModeSolver: AbstractLayer, Modes
+import ..Materials: AbstractLayer
+import ..ModeSolver: Modes
 using LinearAlgebra
 using StaticArrays
 
