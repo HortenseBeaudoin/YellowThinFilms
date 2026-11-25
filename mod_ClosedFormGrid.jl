@@ -9,17 +9,17 @@ mod_ClosedFormGrid.jl -- reciprocal-space quadrature for the closed-form caches
   - `box_kρ_grid`      -- 2D, box source, any stack (`box_kρ_grid_grouped`: one kρ
     rule per φ group).
 
-Every builder starts from `KSpaceFeatures.kspace_features`: light lines (full ε
+Every builder starts from `Features.kspace_features`: light lines (full ε
 and μ), real-axis poles from a scan of the source layer's cavity response, and a
 cut-off set by the geometry (`target_decay/h_min`). The poles are inside the
 finite band `[0, Kcut]`; there is no tail. Then one of two engines
-(`KSpaceFeatures.choose_engine`, from the materials):
+(`Quadrature.choose_engine`, from the materials):
 
   - `:fixed`    -- feature-driven composite Gauss–Legendre (`fixed_kρ_rule`):
     graded onto the singular light lines, panel ≈ pole width over every pole
     cluster, coarsening past them while following `e^{−kρh}` and `e^{ikρρ}`.
     Default for stacks with a metallic, hyperbolic or gyrotropic layer.
-  - `:adaptive` -- h-adaptive Gauss–Kronrod (`KxGrid.adaptive_kx_grid`) on probe
+  - `:adaptive` -- h-adaptive Gauss–Kronrod (`Quadrature.adaptive_kx_grid`) on probe
     integrands evaluated through the SAME closed-form synthesis the field uses,
     seeded with the features. Default for all-dielectric stacks; always used by
     the box grid (its probes include the box's interior term).
@@ -60,7 +60,7 @@ envelope `tail(K) ~ log(KΔ)/(KΔ)`, `Δ = min(Δx_box, Δy_box, Δz_box)`. Each
 cutoff is whichever cuts first, `min(target_decay/h, K_box)` with `K_box` from
 `log(KΔ)/(KΔ) ≤ rtol` (`box_tail_cutoff`); inside the slab (`h = 0`) only `K_box`
 applies. The probes share one grid, so the cut-off is the largest of these, at
-least 80·kmax and at most `kρ_cap` (`KxGrid.tail_bound`). In practice
+least 80·kmax and at most `kρ_cap` (`Features.tail_bound`). In practice
 `K_box ≫ kρ_cap` as soon as an interior probe is present, so `kρ_cap` is what
 truncates the self-slab band: the field inside the source slab is converged to
 that bound, not absolutely. The φ grid must resolve `kρ·ρ` up to that bound for the
@@ -78,30 +78,16 @@ reports it at the floor width `1e-12·q`.
 """
 module ClosedFormGrid
 
-export point_kx_grid, point_kρ_grid_2d, chunked_2d, box_kρ_grid, box_kρ_grid_grouped, phi_groups, box_tail_cutoff, is_lossless
+export point_kx_grid, point_kρ_grid_2d, chunked_2d, box_kρ_grid, box_kρ_grid_grouped, phi_groups, is_lossless
 
 import ..Materials: AbstractLayer, _is_azimuthally_symmetric_stack
-import ..KxGrid: adaptive_kx_grid, kronrod_rule, branch_points, build_kphi_grid, thinnest_finite_layer,
-                decay_cutoff, tail_bound, gl_rule, halve_panels
-import ..KSpaceFeatures: kspace_features, fixed_kρ_rule, adaptive_seeds, choose_engine, _grade_for
+import ..Features: kspace_features, branch_points, thinnest_finite_layer, decay_cutoff, tail_bound, box_tail_cutoff
+import ..Quadrature: adaptive_kx_grid, kronrod_rule, build_kphi_grid, gl_rule, halve_panels,
+                    fixed_kρ_rule, adaptive_seeds, choose_engine, _grade_for
 import ..CavityTransfer: build_cavity_transfer_1d, build_cavity_transfer_2d
 import ..ClosedFormField: closed_form_G, closed_form_pixel
 using Base.Threads
 using LinearAlgebra: norm
-
-"""
-    box_tail_cutoff(Δ, rtol) -> K
-
-Smallest `K` with `log(K·Δ)/(K·Δ) ≤ rtol` (the algebraic box-tail envelope,
-§4.2), by fixed-point iteration on `K = log(K·Δ)/(rtol·Δ)`.
-"""
-function box_tail_cutoff(Δ::Real, rtol::Real)
-    K = 10 / (rtol * Δ)
-    for _ in 1:50
-        K = max(log(K * Δ), 1.0) / (rtol * Δ)
-    end
-    return K
-end
 
 """
     is_lossless(stack) -> Bool
@@ -134,7 +120,7 @@ cost ceiling, not derived from the physics; it wins over the 80·kmax floor. `in
 `adaptive_kx_grid`'s info with the probe list, `h_min` (smallest probe distance), the
 cut-off (`tail_bound`), the number of distinct kρ solves and the `features`.
 
-Seeds. The adaptive refinement starts from `KSpaceFeatures.adaptive_seeds`: the
+Seeds. The adaptive refinement starts from `Quadrature.adaptive_seeds`: the
 light lines at the grid's φ, the real-axis poles found by the scan
 (`scan_poles=true`; over the grid's own φ when there are at most `N_φ_scan` of
 them, e.g. one group of `box_kρ_grid_grouped`, else over `N_φ_scan` directions),
@@ -348,7 +334,7 @@ lateral position.
 Resolution. `pz` (default `thinnest_finite_layer(stack)/20`) is the grid's
 resolution: a point source has no size of its own, its integrand decays only like
 `e^{−kρ|ζ|}`, so the band is cut at `Kcut = target_decay/(pz/2)`
-(`KxGrid.decay_cutoff`), at least 2·kmax and at most `kρ_cap` (cost ceiling, in the
+(`Features.decay_cutoff`), at least 2·kmax and at most `kρ_cap` (cost ceiling, in the
 caller's k units; default `nothing` = `kρ_cap_rel·kmax`, unit-independent; it wins over
 the floor, with a warning and `info.features.capped = true` when it cuts below the
 geometric cut-off). Content closer to the source than `pz/2` is not resolved. `h_min` overrides `pz/2`
@@ -358,7 +344,7 @@ With `h_min` given, the probes (adaptive engine, `check`) only use source depths
 least `h_min` from the layer's real interfaces. `ρ_max` is the largest lateral
 offset the grid must resolve.
 
-Engine (`KSpaceFeatures.choose_engine`): `:auto` takes `:fixed` when a layer is
+Engine (`Quadrature.choose_engine`): `:auto` takes `:fixed` when a layer is
 metallic, hyperbolic or gyrotropic, `:adaptive` when every layer is dielectric.
   - `:fixed`: `fixed_kρ_rule(features; rtol, rule...)` (`rule`: keyword overrides,
     e.g. `(; order=12, grade=40)`). No probe is evaluated to build it.

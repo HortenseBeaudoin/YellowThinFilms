@@ -22,7 +22,7 @@ const _Jz_row_unit  = SVector{3,ComplexF64}(0,0,1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    Source_projection_Berreman_xyz(kt, ω, ϵ, modes)
+    Source_projection_Berreman_xyz(kt, ω, ϵ, modes) -> (sif, sib)
 
 Projects unit moments/currents along x, y and z onto the Berreman mode basis, all at
 once. Returns (sif, sib), each a 2x3 matrix whose columns correspond to a unit dipole

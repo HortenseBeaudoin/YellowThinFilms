@@ -14,8 +14,8 @@ density sampled on a `uniform_kxky_grid`, at local depth `z` (top-referenced
 within the host layer, same convention as `Dipole.z`).
 
 # Fields
-- `J::Array{ComplexF64,3}`: Nx x Ny x 3 array of (Jx, Jy, Jz) on the lateral grid
-- `z::Float64`: local depth `z` of the sheet
+- `J::Array{ComplexF64,3}`: Nx x Ny x 3 array of (Jx, Jy, Jz) on the lateral grid.
+- `z::Float64`: local depth `z` of the sheet.
 """
 struct Sheet
     J::Array{ComplexF64,3}
@@ -30,7 +30,7 @@ Sheet(J::AbstractArray{<:Number,3}, z::Real) =
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _nearest_node_index(grid, x, y)
+    _nearest_node_index(grid, x, y) -> (i, j)
 
 Pixel nearest to the physical position `(x,y)`: `i = round(Int, x/Δx) + midx`.
 Exact when `(x,y)` is on a node, otherwise moves the point by up to `Δx/2`
@@ -60,7 +60,7 @@ _point_moment_vec(p::Symbol) =
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    uniform_kxky_grid(; L, Δx, Ly=L, Δy=Δx)
+    uniform_kxky_grid(; L, Δx, Ly=L, Δy=Δx) -> NamedTuple
 
 Lateral pixel grid, set by `L` and `Δx`. By default, set for x and copied
 by y. Option to set `Ly` and `Δy` independently.
@@ -71,8 +71,8 @@ by y. Option to set `Ly` and `Δy` independently.
 
 # Returns
 - `(Nx, Ny, Δx, Δy, midx, midy, L, Ly)`: Nx and Ny are the number of pixel in 
-x and y, Δx and Δx the computed resolution 2L/N, midx and midy the center's id, 
-and L and Ly the half-width of the window. 
+  x and y, Δx and Δx the computed resolution 2L/N, midx and midy the center's id, 
+  and L and Ly the half-width of the window. 
 """
 function uniform_kxky_grid(; L::Real, Δx::Real, Ly::Real=L, Δy::Real=Δx)
     Lf, Lyf  = Float64(L), Float64(Ly)
@@ -96,13 +96,13 @@ Build a current `Sheet` from point moments. Each point is snapped
 to the nearest pixel of `grid`.
 
 # Arguments
-- `grid::NamedTuple`: a uniform in-plane grid
-- `z::Real`: local depth `z` of the sheet
+- `grid::NamedTuple`: a uniform in-plane grid.
+- `z::Real`: local depth `z` of the sheet.
 - `points::AbstractVector`: a vector of a single of multiple `(x, y, p)`, 
-where `p` is a 3-vector or `:x`/`:y`/`:z`. Points on the same pixel are summed.
+  where `p` is a 3-vector or `:x`/`:y`/`:z`. Points on the same pixel are summed.
 
 # Returns
-- `Sheet`: current density sheet at depth `z`
+- `Sheet`: current density sheet at depth `z`.
 """
 function point_current_sheet(grid::NamedTuple, z::Real, points::AbstractVector)
     J = zeros(ComplexF64, grid.Nx, grid.Ny, 3)

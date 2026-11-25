@@ -14,7 +14,7 @@ using StaticArrays
 Source point definition.
 
 # Fields
-- `p::SVector{3,ComplexF64}`: dipole's moment p, [px, py, pz]
+- `p::SVector{3,ComplexF64}`: dipole's moment p, [px, py, pz].
 - `ω::Real`: frequency. 
 - `x::Float64`: dipole's position in x. 
 - `z::Float64`: source depth, following the convention
@@ -37,7 +37,7 @@ end
 Dipole(p, ω, x, z, layer) = Dipole(p, ω, x, z, layer, 0.0)
 
 """
-    Dipole_constructor(p, ω, x, z, layer; y)
+    Dipole_constructor(p, ω, x, z, layer; y) -> Dipole
 
 Returns a dipole struct from either a full moment input, of a single :x, :y or :z
 direction. Position in y optinal, defaults to 0.

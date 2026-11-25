@@ -40,7 +40,7 @@ _flush_denormal(v::AbstractArray) = _flush_denormal.(v)
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _cond2x2(A)
+    _cond2x2(A) -> Float64
 
 Returns the conditionning of a 2x2 block `A`, after scaling each column to unit norm.
 Scaling makes the safegard accurate even when the two modes are order of magnitudes apart.
@@ -56,7 +56,7 @@ function _cond2x2(A::SMatrix{2,2})
 end
 
 """
-    _SProp(d, Q)
+    _SProp(d, Q) -> SVector{2,ComplexF64}
 
 Returns the 2x2 propagation matrix of a single direction, forward or backward.  
 """
@@ -76,7 +76,7 @@ const _E₋ = SMatrix{2,4,ComplexF64}(0,0, 0,0, 1,0, 0,1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _R_cavity(stack, layer, modes, Sall, Sint)
+    _R_cavity(stack, layer, modes, Sall, Sint) -> (RL, RR, RR_right, Qf, Qb, d)
 
 Reflection matrices within a given layer, as seen from its own true edges,
 z=0 and z=d; used in cavity solve.
@@ -103,7 +103,7 @@ function _R_cavity(stack::Vector{<:AbstractLayer}, layer::Int,
 end
 
 """
-    _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer)
+    _cavity_resummation(S₊, S₋, RL, RR, Qf, Qb, d, N, layer) -> (F⁺, F⁻)
 
 The linear, z-independent part of the cavity solve. All values are referenced
 to the true layer's interface, or brought back to them. Solves;
@@ -131,7 +131,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _walk_stack(stack, layer, F⁺, F⁻, RL, RR_right, modes, Sall, Sint; tol, layers)
+    _walk_stack(stack, layer, F⁺, F⁻, RL, RR_right, modes, Sall, Sint; tol, layers) -> (Ef_tot, Eb_tot)
 
 Walk through the stack to compute modal amplitudes in each layer. Comes after the 
 cavity solve, works from its outputs. cond2x2 avoid inversion of near-singular 
@@ -241,7 +241,7 @@ function _walk_stack(stack::Vector{<:AbstractLayer}, layer::Int, F⁺::StaticArr
 end
 
 """
-    _cavity_transfer_columns(stack, layer, modes, Sall, Sint; obs_layers, tol=1E-8)
+    _cavity_transfer_columns(stack, layer, modes, Sall, Sint; obs_layers, tol=1E-8) -> Dict{Int,SMatrix{4,4,ComplexF64,16}}
         
 The z-independent linear map `T^o` from the source layer's (`layer`) edge seeds
 `[S₊; S₋]` to the modal amplitudes `[Ef; Eb]`, for each observation 
@@ -293,7 +293,7 @@ function _cavity_transfer_columns(stack::Vector{<:AbstractLayer}, layer::Int,
 end
 
 """
-    plane_wave_amp(stack, modes, Sall, Sint, a; side=:top, obs_layers=1:N, include_incident=true, tol=1E-8)   
+    plane_wave_amp(stack, modes, Sall, Sint, a; side=:top, obs_layers=1:N, include_incident=true, tol=1E-8) -> Dict{Int,ModalAmp{ComplexF64}}
     plane_wave_amp(stack, ω, kt, a; kwargs...)
 
 Helper for a single plane-wane illumination. Computes the modal amplitudes in each

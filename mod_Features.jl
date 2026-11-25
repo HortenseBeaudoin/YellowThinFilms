@@ -1,57 +1,46 @@
-"""
-mod_KSpaceFeatures.jl -- where the reciprocal-space integrand has structure, found
-BEFORE any quadrature is built (`HANDOUT_quadrature_hyperbolic_gyrotropic.md`, P1–P4).
+module Features
 
-The grid builders (`mod_ClosedFormGrid.jl`) used to know only the light lines and
-the largest of them (`kmax`); the polariton poles of hyperbolic, metallic and
-gyrotropic layers sit far past `kmax`, have a width set by the loss, and move with
-φ. `kspace_features` collects everything a rule needs, once per
-`(stack, ω, source_layer, geometry)`:
-
-  - light lines of every layer (`KxGrid.layer_light_lines`: full ε and μ
-    tensors), the two semi-infinite layers' ones flagged as singular (their `k_z`
-    branch point, `1/k_z` integrably singular);
-  - real-axis poles `(q, Γ, φ)` from a scan of the source layer's cavity response
-    (`real_axis_poles`), merged into clusters;
-  - the cut-off `Kcut = target_decay/h_min` from the geometry (`tail_bound`, at
-    least 2·kmax, at most `kρ_cap`): the poles are inside the finite band, there is
-    no tail;
-  - in 2D, `N_φ` from the geometry (`c_φ·Kcut·ρ_max`).
-
-Two engines use the same features:
-  - `fixed_kρ_rule`: composite Gauss–Legendre on graded panels -- the recipe of
-    the handout's §3, from the features instead of by hand. Cannot stall; its
-    convergence check is the halved rule (`KxGrid.halve_panels`).
-  - `KxGrid.adaptive_kx_grid`, seeded with `adaptive_seeds(features)`.
-
-`choose_engine` picks between them from the materials (`material_class`).
-"""
-module KSpaceFeatures
-
-export material_class, choose_engine, real_axis_poles, kspace_features, fixed_kρ_rule, adaptive_seeds
+export material_class, layer_light_lines, branch_points, real_axis_poles, kspace_features
+export decay_cutoff, tail_bound, box_tail_cutoff, thinnest_finite_layer
 
 import ..Materials: AbstractLayer, _layer_μ, _is_azimuthally_symmetric_stack
 import ..ModeSolver: Modes_Stack
 import ..ScatteringMatrix: S_all_Matrix, S_all_ingredients, _Redheffer
 import ..FieldSolver: _SProp
-import ..KxGrid: layer_light_lines, decay_cutoff, tail_bound, graded_panels, gl_rule, _dedup, _tensor3
 using LinearAlgebra
 using StaticArrays
 using Base.Threads
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Material classes and engine choice
-# ─────────────────────────────────────────────────────────────────────────────
+"""
+    _tensor3(m) -> SMatrix{3,3,ComplexF64}
+
+Turns a material tensor into a plain dense 3×3 statis array. For speed,
+when material type doesn't matter,
+"""
+_tensor3(m) = SMatrix{3,3,ComplexF64}(ntuple(n -> ComplexF64(m[(n - 1) % 3 + 1, (n - 1) ÷ 3 + 1]), 9))
+
+"""
+    _dedup(ks; rtol::Float64=1e-9) -> Vector{Float64}
+
+Merges values closer than `rtol` (relative), keeping the first of each cluster
+"""
+function _dedup(ks::Vector{Float64}; rtol::Float64=1e-9)
+    out = Float64[]
+    for k in ks
+        (isempty(out) || k - out[end] > rtol * max(abs(k), 1e-300)) && push!(out, k)
+    end
+    return out
+end
 
 """
     material_class(layer) -> Symbol
 
-What kind of medium `layer` is at the frequency its ε and μ were evaluated at
-(a value property, not a type: hBN is hyperbolic inside its reststrahlen bands
-and an ordinary dielectric outside them).
-
-  - `:gyrotropic`  -- ε or μ not symmetric (`ε ≠ εᵀ`: magneto-optic, Voigt/Faraday);
+What kind of medium `layer` is at the frequency its ε and μ were evaluated at.
+  - `:gyrotropic` if ε or μ not symmetric (`ε ≠ εᵀ`: magneto-optic, Voigt/Faraday);
   - otherwise, from the signs of the eigenvalues of `Re ε` and `Re μ` (the diagonal
     entries for a diagonal tensor, the principal values for a tilted one):
       `:dielectric` all positive, `:metallic` all of ε negative (μ positive),
@@ -66,25 +55,124 @@ function material_class(layer::AbstractLayer)
     return :hyperbolic
 end
 
-"""
-    choose_engine(stack, engine=:auto) -> :fixed or :adaptive
+# ─────────────────────────────────────────────────────────────────────────────
+#  Core functions
+# ─────────────────────────────────────────────────────────────────────────────
 
-`:auto`: `:adaptive` (seeded Gauss–Kronrod) when every layer is `:dielectric`,
-`:fixed` (feature-driven Gauss–Legendre) as soon as one layer is metallic,
-hyperbolic or gyrotropic -- the stacks whose poles are narrow, far past the light
-lines, or φ-dependent. `:fixed` / `:adaptive` are returned as given.
+# Light lines ──────────────────────────
+
 """
-function choose_engine(stack::Vector{<:AbstractLayer}, engine::Symbol=:auto)
-    engine in (:auto, :fixed, :adaptive) || error("engine must be :auto, :fixed or :adaptive (got :$engine)")
-    engine !== :auto && return engine
-    return all(l -> material_class(l) === :dielectric, stack) ? :adaptive : :fixed
+    layer_light_lines(layer, ω, φ) -> Vector{Float64}
+
+In-plane wavenumbers at which a plane wave travelling along `(cos φ, sin φ)`
+in `layer` has `k_z = 0`. Solves `det(ω²ε + kρ²·K̂ μ⁻¹ K̂) = 0`, where `K̂` is
+the cross-product matrix of `k̂`. The roots are `q = kρ²`, and only those with
+`Re q > 0` are light-lines. 
+
+# Arguments
+- `layer::AbstractLayer`: a single layer of material in the stack. 
+- `ω::Real`: frequency.
+- `φ::Real`: direction of travel in-plane, `(cos φ, sin φ)`. 
+
+# Returns
+- `Vector{Float64}`: containing the light-lines computed from the roots,
+  `kρ = Re √q`. 
+"""
+function layer_light_lines(layer::AbstractLayer, ω::Real, φ::Real)
+    ε = _tensor3(layer.ϵ); μ = _tensor3(_layer_μ(layer))
+    c, s = cos(φ), sin(φ)
+    K = @SMatrix ComplexF64[0 0 s; 0 0 -c; -s c 0]
+    M = K * inv(μ) * K
+    A = Float64(ω)^2 * ε
+    sc = Float64(ω)^2 * max(maximum(abs, ε) * maximum(abs, μ), eps())
+    p0 = det(A); p1 = det(A + sc * M); p2 = det(A + 2sc * M)
+    c2 = (p2 - 2p1 + p0) / (2sc^2); c1 = (p1 - p0) / sc - c2 * sc; c0 = p0
+
+    roots = if abs(c2) * sc^2 <= 1e-12 * (abs(c1) * sc + abs(c0))
+        abs(c1) > 0 ? ComplexF64[-c0 / c1] : ComplexF64[]
+    else
+        D = c1^2 - 4c2 * c0
+        Δ = abs(D) <= 1e-10 * abs(c1)^2 ? zero(D) : sqrt(D)       # double root (isotropic, TE = TM)
+        ComplexF64[(-c1 + Δ) / (2c2), (-c1 - Δ) / (2c2)]
+    end
+    # a double root (isotropic: TE = TM) splits by ~√eps under round-off: merge
+    return _dedup(sort!([real(sqrt(q)) for q in roots if real(q) > 0]); rtol=1e-7)
 end
 
+"""
+    branch_points(stack, ω; φs=(0.0, π/2)) -> Vector{Float64}
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Pole scan
-# ─────────────────────────────────────────────────────────────────────────────
+Calls `layer_light_lines` for each layer of the stack, combines the results and 
+remove duplicates. By default, scans over φ ∈ [0.0, 2π]
 
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers 
+of the stack + 2 (half-plane and/or substrate). Each entry contains a layer's description. 
+- `ω::Real`: frequency.
+
+# Returns
+- `Vector{Float64}`: containing the light-lines of the whole stack. 
+"""
+function branch_points(stack::Vector{<:AbstractLayer}, ω::Real; φs=(0.0, π / 2))
+    ks = Float64[]
+    for lay in stack, φ in φs
+        append!(ks, layer_light_lines(lay, ω, φ))
+    end
+    return _dedup(sort!(ks))
+end
+
+#  Cut-off ──────────────────────────
+
+"""
+    decay_cutoff(h; target_decay=25.0) -> Float64
+
+Cut-off of the evanescent tail, default at 25.0, i.e e^{−25} ≈ 1.4e-11.
+`h` is the smallest source-to-observation distance the grid must resolve.
+"""
+decay_cutoff(h::Real; target_decay::Real=25.0) = Float64(target_decay) / Float64(h)
+
+"""
+    tail_bound(K, kmax; kρ_cap=Inf, kx_ratio_min=80.0) -> Float64
+
+Bounds the decay cutoff between a floor and a ceiling, given a decay and 
+the last light-line on the real axis `kmax`. 
+"""
+tail_bound(K::Real, kmax::Real; kρ_cap::Real=Inf, kx_ratio_min::Real=80.0) =
+    min(max(Float64(K), Float64(kx_ratio_min) * kmax), Float64(kρ_cap))
+
+"""
+    box_tail_cutoff(Δ, rtol) -> K
+
+Smallest `K` with `log(K·Δ)/(K·Δ) ≤ rtol`, found  by fixed-point iteration on
+`K = log(K·Δ)/(rtol·Δ)`. Box-source counterpart of `decay_cutoff`.
+"""
+function box_tail_cutoff(Δ::Real, rtol::Real)
+    K = 10 / (rtol * Δ)
+    for _ in 1:50
+        K = max(log(K * Δ), 1.0) / (rtol * Δ)
+    end
+    return K
+end
+
+"""
+    thinnest_finite_layer(stack) -> Float64
+
+Minimum thickness among `stack`'s genuinely finite layers.
+"""
+function thinnest_finite_layer(stack::Vector{<:AbstractLayer})
+    N = length(stack)
+    N <= 1 && return Inf
+    return minimum(stack[j].d for j in 1:N-1)
+end
+
+#  Pole of R scan ──────────────────────────
+
+"""
+    _σmax(A::SMatrix{2,2})
+
+Returns the largest singular value of a 2x2 matrix, using the closed-form 
+which is its spectral norm ‖A‖₂.
+"""
 function _σmax(A::SMatrix{2,2})
     G = A' * A
     t = real(G[1, 1] + G[2, 2]); dt = real(G[1, 1] * G[2, 2] - G[1, 2] * G[2, 1])
@@ -94,18 +182,9 @@ end
 """
     _cavity_response(stack, ω, s, kρ, φ) -> Float64
 
-A scalar that peaks at the real-axis poles of the field of a source in layer `s`:
-the largest singular value among the layer's edge reflection matrices `RL`
-(stack above, seen from the top edge) and `RR` (stack below, seen from the bottom
-edge) and, for a finite layer, the cavity resummation `(I − ΦF·RL·ΦB·RR)⁻¹`. For a
-semi-infinite source layer that is the stack's reflection seen from it (`r_pp`,
-`r_ss` and their mixing); inside the stack, the global modes (zeros of the cavity
-denominator) and the modes bound to either edge. 0 where the solve fails.
-
-`RR` is composed directly at the interface (`Sint[s] ⋆ SRight[s+1]`), as in
-`FieldSolver._R_cavity`, not by walking through the layer and back
-(`e^{−kz d}·e^{+kz d}`), which underflows to 0 once `Im kz·d ≳ 370` (the 300 nm Si
-cover of the ZrS₂ case, past kρ ≈ 1.24 nm⁻¹).
+Computes the singular values of `Rl`, `RR` and, for finite layer, of the cavity 
+resummation `(I − ΦF·RL·ΦB·RR)⁻¹`. Returns the largest among them as the peak for
+the given pair (kρ, φ). 
 """
 function _cavity_response(stack, ω, s::Int, kρ::Float64, φ::Float64)
     try
@@ -128,26 +207,26 @@ function _cavity_response(stack, ω, s::Int, kρ::Float64, φ::Float64)
 end
 
 """
-    real_axis_poles(stack, ω, source_layer; φs=[0.0], k_lo, k_hi, scan_step=1e-3,
-                    prominence=1.05, exclude=Float64[], floor_rel=1e-6, floor_abs=1e-10) -> Vector{NamedTuple{(:q,:Γ,:φ,:prom)}}
+    real_axis_poles(stack, ω, source_layer; φs=[0.0], k_lo, k_hi) -> Vector{NamedTuple{(:q,:Γ,:φ,:prom)}}
 
-Real-axis poles of the field of a source in `source_layer`, along each in-plane
-direction in `φs`:
-  1. evaluate `_cavity_response` on a log-spaced kρ grid from `k_lo` to `k_hi`
-     (relative step `scan_step`; the response is evaluated once per point, one
-     4×4 S-matrix per layer);
-  2. keep the local maxima that stand at least `prominence`× above the higher of
-     the two valleys around them (searched over a factor 4 in kρ) and reach at least
-     `floor_rel` × the largest response along that φ and `floor_abs` (the
-     reflection of a homogeneous stack is round-off, whose wiggles are not poles);
-  3. locate each maximum by golden-section search (`q`), and its half-width `Γ`
-     where the response falls to `b + (peak − b)/√2` (`b` the valley level), the
-     nearer side of the two: a pole `A/(kρ − q − iΓ)` has `|·|` at `1/√2` of its
-     peak at `kρ = q ± Γ`, so `Γ ≈ Im` of the complex pole.
+Founds the real-axis poles along each in-plane direction in `φs`. Evaluates
+`_cavity_response` on a log-spaced kρ grid from `k_lo` to `k_hi`, keeps the 
+local maxima that standout and locate each more precisely by golden-section
+search. A peak narrower than the scan step is still found, as long as it 
+stands out of the background.
 
-A peak narrower than the scan step is still found (its nearest sample is a local
-maximum) as long as it stands out of the background. Peaks within `1e-6·q` of a
-value in `exclude` (the light lines: mode normalisation, not poles) are dropped.
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers 
+of the stack + 2 (half-plane and/or substrate). Each entry contains a layer's description. 
+- `ω::Real`: frequency.
+- `source_layer::Int`: id of the layer containing the source.
+- `φs=[0.0]`: direction of travel in-plane, `(cos φ, sin φ)`. 
+- `k_lo::Real`: lower bound of the search log-spaced kρ grid.
+- `k_hi::Real`: upper bound of the search log-spaced kρ grid.
+
+# Returns
+- `NamedTuple{(:q, :Γ, :φ, :prom)`: containing each pole `q`, its width `Γ`,
+  its direction `φ` and its prominence `prom`. 
 """
 function real_axis_poles(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                          φs=[0.0], k_lo::Real, k_hi::Real, scan_step::Real=1e-3,
@@ -207,13 +286,9 @@ end
 """
     _clusters(poles, merge_rel) -> Vector{NamedTuple{(:a,:b,:Γ)}}
 
-Intervals the fixed rule resolves at a pole's width: one `[q, q]` per pole, plus,
-for every two poles adjacent in `q` that are within `merge_rel·q` of each other (or
-within a few widths), the segment between them at the smaller of their two widths.
-In 2D `merge_rel` is the φ step of the scan: a pole at a direction between two
-scanned ones lies between their positions, with a width between theirs, so the
-chain of segments covers its track without imposing the narrowest pole's width on
-the whole range.
+Returns 0 length interval `[q, q]` for each pole, along with the width `Γ`. For
+neighbouring poles closer than the given tolerance, also return the segment 
+between them `[a, b]`. 
 """
 function _clusters(poles, merge_rel::Float64)
     ps = sort(collect(poles); by=p -> p.q)
@@ -229,20 +304,15 @@ function _clusters(poles, merge_rel::Float64)
     return unique(cl)
 end
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Features
-# ─────────────────────────────────────────────────────────────────────────────
+#  Combined features ──────────────────────────
 
 """
     _pole_track_η(poles, φ_scan) -> Float64
 
-Smallest distance `η` from the real φ axis of the φ-singularities that moving poles
-put in the 2D integrand. At fixed kρ, a pole `q(φ) − iΓ` crosses kρ at some φ, where
-the integrand peaks with a width `η ≈ Γ / |dq/dφ|` in φ; the trapezoid rule then
-converges as `e^{−N_φ·η}`. `dq/dφ` is read from each pole and its nearest-`q`
-partner at the neighbouring scanned direction. `Inf` with fewer than two scanned φ
-or no pole track.
+Returns `η`, the smallest feature to resolve in φ when integrating in 2D. 
+At a fixed kρ, a pole `q(φ) − iΓ` crosses kρ at some φ: those are the φ-singularities. 
+At those crossing, the integrand peaks with a width `η ≈ Γ / |dq/dφ|`. `dq/dφ` is read 
+from each pole and its nearest-`q` partner at the neighbouring scanned direction.
 """
 function _pole_track_η(poles, φ_scan)
     φs = sort(unique(Float64.(φ_scan)))
@@ -262,36 +332,21 @@ end
 
 
 """
-    kspace_features(stack, ω, source_layer; h_min, ρ_max=0.0, dims=1, N_φ_scan=32,
-                    target_decay=25.0, kρ_cap=nothing, kρ_cap_rel=1e5, scan=true, scan_step=1e-3,
-                    prominence=1.05, c_φ=2.5, N_φ_min=64) -> NamedTuple
+    kspace_features(stack, ω, source_layer; h_min) -> NamedTuple
 
-Everything the rules need (module notes). `h_min` is the smallest
-source-to-observation vertical distance the grid must resolve (for the scattered
-field on the source plane, twice the source-to-interface distance); `ρ_max` the
-largest lateral offset. `dims = 2` scans the poles over several φ (a
-`(kρ, φ)` grid shares one kρ rule for all φ): one direction for an azimuthally
-symmetric stack, `N_φ_scan` over `[0, π/2]` for a diagonal anisotropic one (the
-mirrors map the rest), `N_φ_scan` over `[0, 2π)` otherwise (a gyrotropic stack is
-not symmetric under `φ → φ + π`).
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers 
+of the stack + 2 (half-plane and/or substrate). Each entry contains a layer's description. 
+- `ω::Real`: frequency.
+- `source_layer::Int`: id of the layer containing the source.
+- `h_min`: smallest source-to-observation longitudinal distance, typically 
+  discretization in z. 
 
-Cost ceiling on the cut-off: `kρ_cap` (absolute, in the caller's k units) or, when
-it is `nothing` (default), `kρ_cap_rel·kmax` -- unit-independent, since `kmax`
-scales with the units. If the ceiling cuts below the geometric cut-off
-`target_decay/h_min`, the grid no longer resolves `h_min`: a warning is printed and
-`capped = true`, `K_geom` are returned.
-
-`Kcut` overrides the geometric cut-off (the box grid has its own, algebraic one);
-`φ_scan` overrides the scanned directions (a φ group of `box_kρ_grid_grouped`
-scans its own φ), except on an azimuthally symmetric stack, which scans φ = 0 only.
-
-Fields: `classes`, `light_lines` (all layers, every scanned φ), `singular_lines`
-(semi-infinite layers only), `kmax`, `Kcut`, `h_min`, `ρ_max`, `poles`,
-`clusters` (`_clusters`), `N_φ` (2D; the largest of `N_φ_min`, `N_φ_lateral` =
-`c_φ·Kcut·ρ_max` (harmonics of `e^{ikρρcos(φ−ψ)}` up to `kρρ`) and `N_φ_poles` =
-`c_η·log(10/rtol)/η_min`, `c_η = 1.5` (1.0 left InSb at 5.8e-6) (`_pole_track_η`: poles that move with φ make the integrand
-peak in φ), rounded up to even, so the `φ + π` pairs the reciprocity checks need
-are on the grid), `N_φ_lateral`, `N_φ_poles`, `η_min`, `φ_scan`, `K_geom`, `K_cap`, `capped`.
+# Returns
+- `NamedTuple`: contains all features of the integrand. 
+Fields: `classes`, `light_lines`, `singular_lines`, `kmax`, `Kcut`, `h_min`, 
+`ρ_max`, `poles`, `clusters`, `N_φ`, `N_φ_lateral`, `N_φ_poles`, `η_min`, 
+`φ_scan`, `K_geom`, `K_cap`, `capped`.
 """
 function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int;
                          h_min::Real, ρ_max::Real=0.0, dims::Int=1, N_φ_scan::Int=32,
@@ -358,91 +413,6 @@ function kspace_features(stack::Vector{<:AbstractLayer}, ω::Real, source_layer:
             h_min=Float64(h_min), ρ_max=Float64(ρ_max), poles=poles, clusters=clusters,
             N_φ=N_φ, N_φ_lateral=N_lat, N_φ_poles=N_pole, η_min=η, φ_scan=φ_scan, dims=dims,
             K_geom=K_geom, K_cap=K_cap, capped=capped)
-end
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Engines
-# ─────────────────────────────────────────────────────────────────────────────
-
-"""
-    fixed_kρ_rule(feat; order=8, rtol=1e-6, α=0.5, grade=12, r_rel=0.05,
-                  c_h=4.0, c_ρ=4.0, pole_safety=0.5) -> (nodes, weights, panels)
-
-Composite Gauss–Legendre rule (`order` nodes per panel) on `[0, feat.Kcut]`,
-breaks at every light line, panels from `KxGrid.graded_panels` with the local
-target width the smallest of:
-
-  - background: `min(c_h/h_min, c_ρ/ρ_max, max(r_rel·kρ, kmax/40))` -- follows
-    `e^{−kρh}` and the lateral `e^{ikρρ}` (≤ `c_*` radians per panel), and
-    coarsens by ×10 per decade of kρ (`r_rel`);
-  - each singular light line `L`: `max(L·2^-grade, α·|kρ − L|)` -- geometric
-    grading onto the `1/k_z` branch point from both sides. The two panels touching
-    `L` are integrated in `u`, `kρ = L ∓ u²` (`KxGrid.gl_rule`'s `singular`), which
-    removes the singularity (the handout's Purcell-figure substitution), so 2⁻¹² is
-    deep enough. Grading alone needed 2⁻⁴⁶ for 1e-6 (the last panel's error is
-    `∝ √width`), which puts nodes within 1e-14 of `L`, where the general `eigen`
-    path fails. A light line that moves with φ is a break only at the scanned φ;
-    between them it falls inside the graded panels, not on a substituted one;
-  - each pole or pole segment `[a, b]` of width `Γ` (`_clusters`): `max(w_Γ, α·dist(kρ, [a, b]))`, with
-    `w_Γ = pole_safety · 2Γ/ε_B`, `ε_B = (ρ_B − 1/ρ_B)/2`, `ρ_B = rtol^(−1/2order)`:
-    the panel half-width at which a pole at distance `Γ` from the real axis keeps
-    the Gauss–Legendre error below `rtol` (Bernstein ellipse). For `rtol = 1e-6`,
-    order 8: `w_Γ ≈ Γ`, i.e. a node spacing of `Γ/8`.
-
-Every term is Lipschitz with constant ≤ `α`, which `graded_panels` needs. Halving
-every panel (`KxGrid.halve_panels`, then `gl_rule(...; singular=feat.singular_lines)`)
-is the convergence check.
-"""
-function fixed_kρ_rule(feat; order::Int=8, rtol::Real=1e-6, α::Real=0.5, grade::Int=12,
-                       r_rel::Real=0.05, c_h::Real=4.0, c_ρ::Real=4.0, pole_safety::Real=0.5)
-    r_rel <= α || error("fixed_kρ_rule: r_rel must be ≤ α")
-    ρB = (1 / Float64(rtol))^(1 / (2order)); εB = (ρB - 1 / ρB) / 2
-    wΓ(Γ) = pole_safety * 2Γ / εB
-    w_flat = min(c_h / feat.h_min, feat.ρ_max > 0 ? c_ρ / feat.ρ_max : Inf)
-    w_floor = feat.kmax / 40
-    sing = feat.singular_lines; cl = feat.clusters
-    function width(k)
-        w = min(w_flat, max(r_rel * k, w_floor))
-        for L in sing
-            w = min(w, max(L * 2.0^-grade, α * abs(k - L)))
-        end
-        for c in cl
-            dist = k < c.a ? c.a - k : (k > c.b ? k - c.b : 0.0)
-            w = min(w, max(wΓ(c.Γ), α * dist))
-        end
-        return w
-    end
-    breaks = vcat(0.0, [L for L in feat.light_lines if L < feat.Kcut], feat.Kcut)
-    panels = graded_panels(breaks, width; α=α)
-    nodes, wts = gl_rule(panels; order=order, singular=feat.singular_lines)
-    return nodes, wts, panels
-end
-
-_grade_for(rtol) = min(50, ceil(Int, 2 * log2(10 / Float64(rtol))))
-
-"""
-    adaptive_seeds(feat; rtol=1e-6, n_Γ=4.0, grade=2·log2(10/rtol)) -> Vector{Float64}
-
-Starting breakpoints for `KxGrid.adaptive_kx_grid` from the features: the light
-lines, geometric grading `L(1 ± 2^-j)`, `j = 1…grade`, onto the singular ones,
-each pole segment's `[a − n_Γ·Γ, a, b, b + n_Γ·Γ]`, and log-spaced seeds (×2) from
-`kmax` to `Kcut`, so the long band past the light lines starts out graded as the
-old `t/(1−t)` tail was. Without the grading, Gauss–Kronrod judged a coarse panel
-next to a lossless light line converged while 1e-2 off (dipole above a lossless
-magnetic half-space); from the graded start it refines where it must.
-"""
-function adaptive_seeds(feat; rtol::Real=1e-6, n_Γ::Real=4.0, grade::Int=_grade_for(rtol))
-    s = copy(feat.light_lines)
-    for L in feat.singular_lines, j in 1:grade, sg in (-1, 1)
-        push!(s, L * (1 + sg * 2.0^-j))
-    end
-    for c in feat.clusters
-        append!(s, (c.a - n_Γ * c.Γ, c.a, c.b, c.b + n_Γ * c.Γ))
-    end
-    k = 2 * feat.kmax
-    while k < feat.Kcut; push!(s, k); k *= 2; end
-    return sort!(unique!([x for x in s if 0 < x < feat.Kcut]))
 end
 
 end

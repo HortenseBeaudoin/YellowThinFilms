@@ -5,7 +5,7 @@ export eval_semi, eval_semi_external, eval_semi_internal, eval_semi_external_x
 export eval_semi_cartesian
 export build_kx_grid
 
-import ..KxGrid: branch_points, evanescent_umax, _evanescent_band_nodes
+import ..Features: branch_points
 using LinearAlgebra
 using Bessels
 using FastGaussQuadrature
@@ -16,11 +16,39 @@ using FastGaussQuadrature
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Fixed, non-uniform kx grid (2026-09-18: moved here from `mod_KxGrid.jl`).
-#  `adaptive_kx_grid` (`mod_KxGrid.jl`) superseded this everywhere else in the
+#  `adaptive_kx_grid` (`mod_Quadrature.jl`) superseded this everywhere else in the
 #  live pipeline -- see that module's own docstring note on this move. This
 #  module keeps it as its own ground-truth quadrature: `_semi_common` below
 #  is the only real caller left, plus `Gz_ShapedPixelKernel_Validation.jl`.
 # ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    evanescent_umax(kmax, Leff; target_decay=25.0, kx_ratio_max=80.0)
+
+Effective length scale that sets the decay. In u, for change of variables kρ = kmax * cosh(u), 
+the tail decays as exp(-kmax * Leff * sinh(u)).
+"""
+function evanescent_umax(kmax::Float64, Leff::Float64;
+                         target_decay::Float64=25.0, kx_ratio_max::Float64=80.0)
+    umax_phys = asinh(target_decay / (kmax * Leff))
+    umax_cap  = acosh(max(kx_ratio_max, 1.0 + 1e-10))
+    return min(umax_phys, umax_cap)
+end
+
+
+"""
+    _evanescent_band_nodes(kmax, umax, N; δ=1e-6)
+
+The `kmax -> ∞` cosh-substituted Gauss-Legendre band itself.
+"""
+function _evanescent_band_nodes(kmax::Float64, umax::Float64, N::Int; δ::Float64=1e-6)
+    umax <= δ && return Float64[], Float64[]
+    ξe, we = gausslegendre(N)
+    u  = @. (umax - δ)/2 * ξe + (umax + δ)/2
+    wu = @. we * (umax - δ)/2
+    return kmax .* cosh.(u), wu .* (kmax .* sinh.(u))
+end
+
 
 # On a segment between two singularities, cluster point at the extremities
 function _endpoint_cluster(a::Float64, b::Float64, N::Int; δ::Float64=1e-6)

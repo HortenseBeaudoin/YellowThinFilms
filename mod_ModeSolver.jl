@@ -27,12 +27,12 @@ Modes in a layer, described by their eigenvalues and eigenvectors.
 There is always 4 modes propagating in multilayers, so elements are static arrays. 
 
 # Fields
-- `Vf::SMatrix{4, 2, ComplexF64, 8}`: Forward-going eigenvectors
-- `Vb::SMatrix{4, 2, ComplexF64, 8}`: Backward-going eigenvectors
-- `Wf::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wf = R4s * Vf
-- `Wb::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wb = R4s * Vb
-- `Qf::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or forward-going modes
-- `Qb::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or backward-going modes
+- `Vf::SMatrix{4, 2, ComplexF64, 8}`: Forward-going eigenvectors.
+- `Vb::SMatrix{4, 2, ComplexF64, 8}`: Backward-going eigenvectors.
+- `Wf::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wf = R4s * Vf.
+- `Wb::SMatrix{4, 2, ComplexF64, 8}`: Left-eigenvector / power in z coupling, Wb = R4s * Vb.
+- `Qf::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or forward-going modes.
+- `Qb::SVector{2, ComplexF64}`: Eigenvalues, k⟂/kz or backward-going modes.
 """
 struct Modes
     Vf::SMatrix{4, 2, ComplexF64, 8}
@@ -48,7 +48,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    Modes(Vf, Vb, Wf, Wb, Qf, Qb)
+    Modes(Vf, Vb, Wf, Wb, Qf, Qb) -> Modes
 
 Wraps modes out of eigen into Static Arrays.
 """
@@ -62,7 +62,7 @@ end
 # The two following helper functions exist for azimuthally symmetric stacks
 # (`_is_azimuthally_symmetric_stack`, in Materials), with asymmetric sources
 """
-    _Rot4(φ)
+    _Rot4(φ) -> SMatrix{4,4,ComplexF64}
 
 Standard rotation matrix for angle φ. 
 """
@@ -75,10 +75,10 @@ function _Rot4(φ::Float64)
 end
 
 """
-    _rotate_modes(modes, φ)
+    _rotate_modes(modes, φ) -> Vector{Modes}
 
 Returns rotated modes and associated unchanged eigenvalues Qf, Qb.
-Valid when _is_azimuthally_symmetric_stack(stack) holds
+Valid when _is_azimuthally_symmetric_stack(stack) holds.
 """
 _rotate_modes(modes::Vector{<:Modes}, φ::Float64) = begin
     R = _Rot4(φ)
@@ -90,7 +90,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _berreman_core(ϵ, μ, ω, k)
+    _berreman_core(ϵ, μ, ω, k) -> Matrix{T}
 
 Builds the 4x4 Berreman matrix from a layer's 3x3 ϵ/μ tensors.
 """
@@ -166,14 +166,16 @@ function _berreman_core(ϵ, μ, ω, k)
     return Matrix(Bs)
 end
 
+# TODO check the return type of Vs MMatrix{4,2,ComplexF64}
 """
-    _eigen_QV(layer, ω, kx, ky)
+    _eigen_QV(layer, ω, kx, ky) -> (SVector{4,ComplexF64}, SMatrix{4,4,ComplexF64})
     _eigen_QV(ϵ::AbstractMaterial, μ::AbstractMaterial, ω::Number, kx::Number, ky::Number)
     _eigen_QV(ϵ::Union{IsotropicMaterial,UniaxialMaterial}, μ::IsotropicMaterial,
                 ω::Number, kx::Number, ky::Number)
 
 Returns the eigenvalues and eigenvectors of a layer for a given kₜ. 
-Dispatches between closed-form QV calculation or eigen solve of Berreman's matrix based on material.
+Dispatches between closed-form QV calculation or eigen solve of Berreman's 
+matrix based on material.
 """
 _eigen_QV(layer::AbstractLayer, ω::Number, kx::Number, ky::Number) =
     _eigen_QV(layer.ϵ, _layer_μ(layer), ω, kx, ky)
@@ -211,7 +213,7 @@ function _eigen_QV(ϵ::Union{IsotropicMaterial,UniaxialMaterial}, μ::IsotropicM
 end
 
 """
-    _modes_layer(layer, ω, kx, ky; tol=sqrt(eps(Float64)))
+    _modes_layer(layer, ω, kx, ky; tol=sqrt(eps(Float64))) -> ((Vf, Wf, Qf), (Vb, Wb, Qb))
 
 Obtain (Q, V), the eigenmodes and eigenvectors of a layer from _eigen_QV,
 then sort then into forward/backward based on power in z and/or decay direction. 
@@ -271,9 +273,10 @@ function _modes_layer(layer::AbstractLayer, ω::Number, kx::Number, ky::Number;
 end
 
 """
-    _match_modes(modes_A, modes_B; eigpenalty=0.0)
+    _match_modes(modes_A, modes_B; eigpenalty=0.0) -> (Vb, Wb, Qb)
     
-Matches modes between two layers by looking at the maximum overlap between the eigenvectors, Wa'*Vb.
+Matches modes between two layers by looking at the maximum overlap between 
+the eigenvectors, Wa'*Vb.
 """
 function _match_modes(modes_A::_Modes, modes_B::_Modes; eigpenalty::Real = 0.0)
     _, Wa, Qa = modes_A
@@ -294,7 +297,7 @@ function _match_modes(modes_A::_Modes, modes_B::_Modes; eigpenalty::Real = 0.0)
 end
 
 """
-    _modes_stack_core(stack, ω, kx, ky)
+    _modes_stack_core(stack, ω, kx, ky) -> Vector{Modes}
 
 Computes modes in each layer of the stack, 
 then _match_modes aligns them based on layer 1's ordering.
@@ -335,21 +338,22 @@ function _modes_stack_core(stack::Vector{<:AbstractLayer}, ω::Number, kx::Numbe
 end
 
 """
-    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number)
+    Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number) -> Vector{Modes}
     Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, k::AbstractVector)
     Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kρ::Number, ϕ::Number)
 
 Returns the ordered and aligned modes and k⟂ in each layer of a stack. 
 
 # Arguments
-- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers of the stack + 2 (half-plane and/or substrate).
-  Each entry contains a layer's description. 
+- `stack::Vector{<:AbstractLayer}`: vector of length N, with N the number of layers 
+of the stack + 2 (half-plane and/or substrate). Each entry contains a layer's description. 
 - `ω`: frequency. 
-- `k∥`: transverse, conserved, wavevector. Can be called as a single kₓ (::Number) value, as a vector [kx; ky] (::AbstractVector) 
-  or as two arguments kρ and ϕ (::Number, ::Number).  
+- `k∥`: transverse, conserved, wavevector. Can be called as a single kₓ (::Number) value, 
+as a vector [kx; ky] (::AbstractVector) or as two arguments kρ and ϕ (::Number, ::Number).  
 
 # Returns
-- `Vector{Modes}(undef, N)`: of length N containing Modes, the struct containing eigenmodes and eigenvectors.
+- `Vector{Modes}(undef, N)`: of length N containing Modes, the struct containing eigenmodes 
+and eigenvectors.
 """
 Modes_Stack(stack::Vector{<:AbstractLayer}, ω::Number, kx::Number) =
     _modes_stack_core(stack, ω, kx, zero(kx))

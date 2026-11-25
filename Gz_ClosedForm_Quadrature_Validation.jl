@@ -3,7 +3,7 @@ using LinearAlgebra, Printf, FastGaussQuadrature
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gz_ClosedForm_Quadrature_Validation.jl -- the feature-driven k-space quadrature
-# (mod_KSpaceFeatures.jl, HANDOUT_quadrature_hyperbolic_gyrotropic.md), 2026-11-06.
+# (mod_Features.jl + mod_Quadrature.jl, HANDOUT_quadrature_hyperbolic_gyrotropic.md), 2026-11-06.
 #
 #  [L] light lines (full ε, μ tensors) and material classes, vs closed forms
 #  [W] _walk_stack's conditioning guard: the field transmitted into a hyperbolic

@@ -141,7 +141,7 @@ _layer_μ(stack::AbstractLayer) = stack.μ
 
 # Azimuthal symmetry of the stack (used with asymmetric sources: rotate modes instead of re-solving)
 """
-    _is_azimuthally_symmetric_stack(stack::Vector{<:AbstractLayer})
+    _is_azimuthally_symmetric_stack(stack::Vector{<:AbstractLayer}) -> Bool
 
 Check the azimuthal symmetry of the whole stack, not just one layer. 
 All layers have to be isotropic of uniaxial, axis has to be aligned, μ has to be diagonal.

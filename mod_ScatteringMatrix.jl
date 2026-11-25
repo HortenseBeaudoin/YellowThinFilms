@@ -35,7 +35,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    _S_Interface_Matrix(Vf_A, Vb_A, Vf_B, Vb_B)
+    _S_Interface_Matrix(Vf_A, Vb_A, Vf_B, Vb_B) -> SMatrix{4,4,T}
 
 Returns the S-matrix of a single interface between material A and B. 
 """
@@ -62,7 +62,7 @@ function _S_Interface_Matrix(Vf_A::AbstractMatrix, Vb_A::AbstractMatrix,
 end
 
 """
-    _SProp(layer, Qf, Qb)
+    _SProp(layer, Qf, Qb) -> SMatrix{4,4,ComplexF64}
 
 Returns the S-matrix of propagation within a layer, given its eigenmodes Qf, Qb. 
 """
@@ -81,7 +81,7 @@ function _SProp(layer::AbstractLayer, Qf::AbstractVector, Qb::AbstractVector)
 end
 
 """
-    _Redheffer(S1, S2)
+    _Redheffer(S1, S2) -> SMatrix{4,4,T}
 
 Composes systems S1 and S2 by 2x2 block, through the Redheffer star product. 
 Implemented for static matrices of size 4x4. 
@@ -110,7 +110,7 @@ end
 
 
 """
-    S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
+    S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes}) -> (Sint, Sprop)
 
 Returns a tuple containing the S-Matrices of all interface and all propagation
 regions of the stack. 
@@ -141,7 +141,7 @@ function S_all_ingredients(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes
 end
 
 """
-    S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes})
+    S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes}) -> Vector{ScatteringM{Tc}}
     S_all_Matrix(stack::Vector{<:AbstractLayer}, modes::Vector{<:Modes},
                  Sint::Vector{<:SMatrix{4,4}}, Sprop::Vector{<:SMatrix{4,4}})
 
@@ -152,8 +152,8 @@ Requires precomputed modes. If ingredient Sint and Sprop are not provided, compu
 # Arguments
 - `stack::Vector{<:AbstractLayer}`: vector of length N, each entry contains a layer's description. 
 - `modes::Vector{<:Modes}`: of length N containing Modes, the struct containing eigenmodes and eigenvectors.
-- `Sint::Vector{<:SMatrix{4,4}}`: of length N containing interface S-matrices
-- `Sprop::Vector{<:SMatrix{4,4}}`: of length N containing propagation S-matrices
+- `Sint::Vector{<:SMatrix{4,4}}`: of length N containing interface S-matrices.
+- `Sprop::Vector{<:SMatrix{4,4}}`: of length N containing propagation S-matrices.
 
 # Returns
 - `Vector{ScatteringM{Tc}}(undef, N)`: of length N containing ScatteringM, 
