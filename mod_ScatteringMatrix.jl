@@ -1,5 +1,5 @@
 module ScatteringMatrix
-
+# TODO Rename ScatteringMatrices, without the mod_
 export ScatteringM
 export S_all_Matrix
 export S_all_ingredients

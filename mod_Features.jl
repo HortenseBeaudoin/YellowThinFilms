@@ -1,5 +1,5 @@
 module Features
-
+# TODO Rename SpectralSingularities, without the mod_
 export material_class, layer_light_lines, branch_points, real_axis_poles, kspace_features
 export decay_cutoff, tail_bound, box_tail_cutoff, thinnest_finite_layer
 

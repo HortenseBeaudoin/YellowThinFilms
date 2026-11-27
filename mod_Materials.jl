@@ -1,5 +1,5 @@
 module Materials
-
+# TODO Rename LayeredMaterials, without the mod_
 export AbstractMaterial, IsotropicMaterial, UniaxialMaterial, BiaxialMaterial, GyrotropicMaterial
 export AbstractLayer, FlatOpticalLayer, FlatLayer
 

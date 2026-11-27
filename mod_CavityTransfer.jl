@@ -1,50 +1,5 @@
-"""
-mod_CavityTransfer.jl -- the "Layer B" cache of the closed-form (z,z')-separable
-rewrite (`PLAN_closed_form_point_source_rewrite.md` §1.2, §4.1).
-
-For one fixed in-plane wavevector node `kt`, the modal amplitude of a point
-source at depth `z` in `source_layer`, observed in layer `o`, is exactly
-
-    [Ef_o; Eb_o](kt; z) = T^o(kt) · [ sf ∘ Ψf(z) ; sb ∘ Ψb(z) ]
-    Ψf,n(z) = exp(i·Qf,src[n]·(d_src − zpos)),   Ψb,n(z) = exp(−i·Qb,src[n]·zpos)
-
-with `T^o` a 4×4 matrix per node that depends on `(kt, source_layer, o)` only
-(never `z`, `z'`, moment, or source shape) and `(sf,sb)` the z-independent
-point seed of `Source_projection_Berreman_xyz`. `T^o` is built ONCE per node
-from `FieldSolver._cavity_transfer_columns` (the §3 "minimal FieldSolver
-extension", option 1 of the plan: FieldSolver's own resummation+walk run on
-the 4 unit basis inputs -- no duplicated cavity code here). The observation
-depth then enters only through `Φf = e^{iQf,obs·z'}`, `Φb = e^{iQb,obs·(z'−d_obs)}`
-(`mod_ClosedFormField.jl`).
-
-Conventions (fixed by the foundation modules):
-  - `zpos = d − z` for `source_layer == 1`, `zpos = z` otherwise
-    (`ClosedFormField._zpos`).
-  - the cached backward seed is `sb = −sib_raw`: `Source_projection_Berreman_xyz`'s
-    raw `sib` has the opposite sign from the backward seed `T^o` takes (`σ_b = −1`,
-    confirmed through `Ψ_p = −(iM)⁻¹Js/Δz`, plan §5.3). `sf, sb` below are those
-    edge-seed-convention amplitudes, one column per canonical moment x̂,ŷ,ẑ.
-  - same-layer `T^o` holds the REFLECTED (cavity) part only; the direct term is
-    added by the synthesis layer (`mod_ClosedFormField.jl`) with an explicit
-    branch on the sign of `z' − zpos`.
-
-Two caches share this construction (§4.1):
-  - `CavityTransferCache1D` -- `kt=(kx,0)` radial nodes; point source on an
-    isotropic/uniaxial stack only (the J0/J1/J2 fast path).
-  - `CavityTransferCache2D` -- `(kρ,φ)` nodes; everything else (box on any
-    medium, point on biaxial/gyrotropic). Two fill strategies, by
-    `_is_azimuthally_symmetric_stack`: one `Modes_Stack` solve per kρ at φ=0
-    plus the exact `_rotate_modes` rotation for every other φ (`T^o` is then
-    φ-independent: it depends on the modes only through `Qf,Qb` and
-    `Sall/Sint`, all invariant under `Rot4(φ)`), or an independent solve at
-    every `(kρ,φ)` node.
-
-Quadrature nodes are an INPUT here: `mod_ClosedFormGrid.jl` builds them
-(`point_kx_grid` for the 1D cache; `point_kρ_grid_2d` and `box_kρ_grid` for the 2D
-one), or pass any rule of your own.
-"""
 module CavityTransfer
-
+# TODO Rename SpectralCachedResponses, without the mod_
 export AbstractCavityTransferCache, CavityTransferCache1D, build_cavity_transfer_1d
 export CavityTransferCache2D, build_cavity_transfer_2d
 export _mode_field_core, _mode_field_eps
@@ -59,19 +14,26 @@ using LinearAlgebra
 using StaticArrays
 using Base.Threads
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Constant and structures declaration
+# ─────────────────────────────────────────────────────────────────────────────
+
 const _T44 = SMatrix{4,4,ComplexF64,16}
 const _S23 = SMatrix{2,3,ComplexF64,6}
+
+"Common supertype of the 1D and 2D transfer caches."
+abstract type AbstractCavityTransferCache end
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 @inline _isfinitec(z::Complex) = isfinite(real(z)) && isfinite(imag(z))
 @inline _allfinite(A) = all(_isfinitec, A)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Mode field basis
-# ─────────────────────────────────────────────────────────────────────────────
-
 """
-Layer-only-dependent ϵ-derived quantities `_mode_field_core` needs (`ϵzt`,
-`ϵzz`).
+ϵ-derived quantities for Ez computation (`ϵzt`, `ϵzz`).
 """
 function _mode_field_eps(layer::AbstractLayer)
     ϵ = layer.ϵ
@@ -80,10 +42,7 @@ end
 
 """
 Mode field `(Ex, Ey, Ez)` and `kz` of mode `m` in direction `dir ∈ (:f,:b)`.
-`Ez` is built from the mode vector
-only (no local `Jz/(ωϵzz)` term -- see the plan's §5.3; that term is added
-separately by the interior-slab routine, never here). `ϵzt[i]*V[i]` (not
-`dot`) is deliberate: a plain bilinear sum, no conjugation.
+`Ez` is built from the mode vector only. 
 """
 function _mode_field_core(ϵzt::SVector{2,ComplexF64}, ϵzz::ComplexF64,
                            modes::Modes, ω::Float64, kvec::SVector{2,ComplexF64},
@@ -106,16 +65,18 @@ function _mode_field_core(ϵzt::SVector{2,ComplexF64}, ϵzz::ComplexF64,
 end
 
 """
-Per-observation-layer mode field basis on a node set, `Nk×2` matrices
-(node, mode): `Exf,Eyf,Ezf,Exb,Eyb,Ezb` and the obs layer's own `KZf,KZb`
-(= `Qf_obs, Qb_obs`), plus `d` (= `d_obs`). A node whose basis is not finite
-is left at zero.
+Per-observation-layer mode field basis on a node set. `Nkx2` matrices
+(node, mode): `Exf,Eyf,Ezf,Exb,Eyb,Ezb` and the obs layer's own `KZf,KZb`.
+No fixed size, depends on the number of observation layers. 
 """
 function _obs_basis(dims::Int...)
     z() = zeros(ComplexF64, dims..., 2)
     return (Exf=z(), Eyf=z(), Ezf=z(), Exb=z(), Eyb=z(), Ezb=z(), KZf=z(), KZb=z())
 end
 
+"""
+Fills a basis for a given kₜ and observation layer.
+"""
 function _fill_obs_basis!(B, k, layer::AbstractLayer, modes::Modes, ω::Float64,
                           kvec::SVector{2,ComplexF64})
     ϵzt, ϵzz = _mode_field_eps(layer)
@@ -130,69 +91,81 @@ function _fill_obs_basis!(B, k, layer::AbstractLayer, modes::Modes, ω::Float64,
     return B
 end
 
-"Common supertype of the 1D and 2D transfer caches."
-abstract type AbstractCavityTransferCache end
-
 # ─────────────────────────────────────────────────────────────────────────────
+#  Core functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+# TODO Length of the stack suddenly L, where in other modules its N ? A reason for that ? 
+# TODO Uniformize the kx/kt/krho notation everywhere perhaps. The more general is to use kt. 
 #  1D cache: kt = (kx, 0), point source, isotropic/uniaxial stack
-# ─────────────────────────────────────────────────────────────────────────────
-
 """
-    CavityTransferCache1D
+    CavityTransferCache1D(stack, ω, source_layer, obs_layers, kx_nodes, wt_nodes, valid,
+                          Tvalid, T, Qf_src, Qb_src, d_src, sf, sb, basis, d_obs, ϵ_src)
 
-Everything the closed-form synthesis needs, per radial node `k` of a 1D
-`kt=(kx,0)` quadrature, for one `source_layer` and a set of `obs_layers`:
+Values needed for the closed-form, per radial node `k` of a 1D `kt=(kx,0)` quadrature.
 
-  - `T[o][k]`       -- 4×4 `T^o` (see module docstring), per obs layer `o`
-  - `Qf_src[k]`, `Qb_src[k]`, `d_src` -- what `Ψ(z)` needs
-  - `sf[k]`, `sb[k]` -- 2×3 point seeds (edge-seed convention, `sb = −sib_raw`),
-                       column q = canonical moment x̂,ŷ,ẑ
-  - `basis[o]`      -- mode field basis + `KZf/KZb` (= `Qf_obs,Qb_obs`) of layer `o`
-  - `d_obs[o]`
-  - `ϵ_src`         -- source layer's 3×3 ϵ (§5.3 interior term, later phases)
-  - `valid[k]`      -- false where the mode/S-matrix/projection solve failed or
-                       returned a non-finite seed (node contributes nothing at all)
-  - `Tvalid[o][k]`  -- false where `T^o` itself is non-finite; only layer `o`'s
-                       reflected/transmitted term drops that node (the same-layer
-                       direct term still uses it)
+# Fields
+- `stack::Vector{L}`: vector of length L, with L the number of layers.
+- `ω::Float64`: frequency. 
+- `source_layer::Int`: source layer id.
+- `obs_layers::Vector{Int}`: vector with all the observation layer's id. 
+- `kx_nodes::Vector{Float64}`: integration kₜ nodes.
+- `wt_nodes::Vector{Float64}`: integration weight of each node.
+- `valid::Vector{Bool}`: false when the mode/S-matrix/projection solve failed or
+  returned a non-finite seed
+- `Tvalid::Dict{Int,Vector{Bool}}`: false when `T^o` is non-finite. 
+- `T::Dict{Int,Vector{_T44}}`: 4x4 `T^o` per obs layer `o`. See doc for details.
+- `Qf_src::Vector{SVector{2,ComplexF64}}`: eigenvalues of the forward modes in the source layer.
+- `Qb_src::Vector{SVector{2,ComplexF64}}`: eigenvalues of the backward modes in the source layer.
+- `d_src::Float64`: thickness of the source layer. 
+- `sf::Vector{_S23}`: 2x3 forward seed for each unit moment. 
+- `sb::Vector{_S23}`: 2x3 backward seed for each unit moment. 
+- `basis::Dict{Int,NamedTuple}`: basis [ex ey ez] + kxf/kxb of the observation layer.
+- `d_obs::Dict{Int,Float64}`: thickness of the observation layer.
+- `ϵ_src::SMatrix{3,3,ComplexF64,9}`: permittivity tensor of the source layer. 
 
 Built by `build_cavity_transfer_1d`. Contains no `z`, `z'`, moment, or shape.
 """
 struct CavityTransferCache1D{L<:AbstractLayer} <: AbstractCavityTransferCache
-    stack        :: Vector{L}
-    ω            :: Float64
-    source_layer :: Int
-    obs_layers   :: Vector{Int}
-    kx_nodes     :: Vector{Float64}
-    wt_nodes     :: Vector{Float64}
-    valid        :: Vector{Bool}
-    Tvalid       :: Dict{Int,Vector{Bool}}
-    T            :: Dict{Int,Vector{_T44}}
-    Qf_src       :: Vector{SVector{2,ComplexF64}}
-    Qb_src       :: Vector{SVector{2,ComplexF64}}
-    d_src        :: Float64
-    sf           :: Vector{_S23}
-    sb           :: Vector{_S23}
-    basis        :: Dict{Int,NamedTuple}
-    d_obs        :: Dict{Int,Float64}
-    ϵ_src        :: SMatrix{3,3,ComplexF64,9}
+    stack::Vector{L}
+    ω::Float64
+    source_layer::Int
+    obs_layers::Vector{Int}
+    kx_nodes::Vector{Float64}
+    wt_nodes::Vector{Float64}
+    valid::Vector{Bool}
+    Tvalid::Dict{Int,Vector{Bool}}
+    T::Dict{Int,Vector{_T44}}
+    Qf_src::Vector{SVector{2,ComplexF64}}
+    Qb_src::Vector{SVector{2,ComplexF64}}
+    d_src::Float64
+    sf::Vector{_S23}
+    sb::Vector{_S23}
+    basis::Dict{Int,NamedTuple}
+    d_obs::Dict{Int,Float64}
+    ϵ_src::SMatrix{3,3,ComplexF64,9}
 end
 
+# TODO : uniformize source_layer vs src_layer vs other notation throughout the whole code. 
 """
     build_cavity_transfer_1d(stack, ω, source_layer, kx_nodes, wt_nodes;
                              obs_layers=1:length(stack), check_symmetry=true)
         -> CavityTransferCache1D
 
-Per node: `Modes_Stack(stack, ω, kx)` → `S_all_ingredients`/`S_all_Matrix` →
+Calls, per mode, `Modes_Stack(stack, ω, kx)` → `S_all_ingredients`/`S_all_Matrix` →
 `_cavity_transfer_columns` (T^o for every obs layer at once) →
 `Source_projection_Berreman_xyz` (point seed) → mode field basis per obs
-layer. `O(Nk)` stack solves, once per `(stack, ω, source_layer)`; every source
-depth, observation depth and moment is then served from this cache with no
-further solve.
+layer.
 
-The 1D path is valid only for a POINT source on an azimuthally symmetric
-(isotropic/uniaxial, isotropic μ) stack; `check_symmetry=true` enforces the
-stack half of that.
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length L, with L the number of layers.
+- `ω::Real`: frequency. 
+- `source_layer::Int`: source layer id.
+- `kx_nodes::AbstractVector{<:Real}`: integration kₜ nodes.
+- `wt_nodes::AbstractVector{<:Real}`: integration weight of each node.
+
+# Returns 
+- `CavityTransferCache1D`: see struct description.
 """
 function build_cavity_transfer_1d(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int,
                                   kx_nodes::AbstractVector{<:Real}, wt_nodes::AbstractVector{<:Real};
@@ -264,46 +237,81 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    CavityTransferCache2D
+    CavityTransferCache2D(stack, ω, source_layer, obs_layers, kρ_nodes, wρ_nodes, phi_nodes,
+                          phi_weights, rotation, valid, Tvalid, T, Qf_src, Qb_src, d_src, sf, 
+                          sb, basis, d_obs, ϵ_src)
 
-Same content as `CavityTransferCache1D`, per `(kρ,φ)` node: every per-node
-field is an `Nk×Np` matrix (`basis[o]` arrays are `Nk×Np×2`), node
-`(k,p)` ↔ `kt = (kρ_k cosφ_p, kρ_k sinφ_p)`. `rotation` records which fill
-strategy was used (see module docstring).
+Values needed for the closed-form, per radial node `k` of a 1D `kt=(kx,0)` quadrature.
+
+# Fields
+- `stack::Vector{L}`: vector of length L, with L the number of layers.
+- `ω::Float64`: frequency. 
+- `source_layer::Int`: source layer id.
+- `obs_layers::Vector{Int}`: vector with all the observation layer's id. 
+- `kρ_nodes::Vector{Float64}`: integration kₜ nodes.
+- `wρ_nodes::Vector{Float64}`: integration weight of each kₜ node.
+- `phi_nodes::Vector{Float64}`: integration φ nodes.
+- `phi_weights::Vector{Float64}`: integration weight of each φ node.
+- `rotation::Bool`: yes if azimuthally cylindric stack and a single solve per kₜ. 
+- `valid::Vector{Bool}`: false when the mode/S-matrix/projection solve failed or
+  returned a non-finite seed
+- `Tvalid::Dict{Int,Vector{Bool}}`: false when `T^o` is non-finite. 
+- `T::Dict{Int,Vector{_T44}}`: 4x4 `T^o` per obs layer `o`. See doc for details.
+- `Qf_src::Vector{SVector{2,ComplexF64}}`: eigenvalues of the forward modes in the source layer.
+- `Qb_src::Vector{SVector{2,ComplexF64}}`: eigenvalues of the backward modes in the source layer.
+- `d_src::Float64`: thickness of the source layer. 
+- `sf::Vector{_S23}`: 2x3 forward seed for each unit moment. 
+- `sb::Vector{_S23}`: 2x3 backward seed for each unit moment. 
+- `basis::Dict{Int,NamedTuple}`: basis [ex ey ez] + kxf/kxb of the observation layer.
+- `d_obs::Dict{Int,Float64}`: thickness of the observation layer.
+- `ϵ_src::SMatrix{3,3,ComplexF64,9}`: permittivity tensor of the source layer. 
+
+Built by `build_cavity_transfer_2d`. Contains no `z`, `z'`, moment, or shape.
 """
 struct CavityTransferCache2D{L<:AbstractLayer} <: AbstractCavityTransferCache
-    stack        :: Vector{L}
-    ω            :: Float64
-    source_layer :: Int
-    obs_layers   :: Vector{Int}
-    kρ_nodes     :: Vector{Float64}
-    kρ_weights   :: Vector{Float64}
-    phi_nodes    :: Vector{Float64}
-    phi_weights  :: Vector{Float64}
-    rotation     :: Bool
-    valid        :: Matrix{Bool}
-    Tvalid       :: Dict{Int,Matrix{Bool}}
-    T            :: Dict{Int,Matrix{_T44}}
-    Qf_src       :: Matrix{SVector{2,ComplexF64}}
-    Qb_src       :: Matrix{SVector{2,ComplexF64}}
-    d_src        :: Float64
-    sf           :: Matrix{_S23}
-    sb           :: Matrix{_S23}
-    basis        :: Dict{Int,NamedTuple}
-    d_obs        :: Dict{Int,Float64}
-    ϵ_src        :: SMatrix{3,3,ComplexF64,9}
+    stack:: Vector{L}
+    ω::Float64
+    source_layer::Int
+    obs_layers::Vector{Int}
+    kρ_nodes::Vector{Float64}
+    kρ_weights::Vector{Float64}
+    phi_nodes::Vector{Float64}
+    phi_weights::Vector{Float64}
+    rotation::Bool
+    valid::Matrix{Bool}
+    Tvalid::Dict{Int,Matrix{Bool}}
+    T::Dict{Int,Matrix{_T44}}
+    Qf_src::Matrix{SVector{2,ComplexF64}}
+    Qb_src::Matrix{SVector{2,ComplexF64}}
+    d_src::Float64
+    sf::Matrix{_S23}
+    sb::Matrix{_S23}
+    basis::Dict{Int,NamedTuple}
+    d_obs::Dict{Int,Float64}
+    ϵ_src::SMatrix{3,3,ComplexF64,9}
 end
 
 """
     build_cavity_transfer_2d(stack, ω, source_layer, kρ_nodes, kρ_weights, phi_nodes, phi_weights;
                              obs_layers=1:length(stack), rotation=:auto) -> CavityTransferCache2D
 
-`rotation=:auto` uses the φ-rotation fill iff `_is_azimuthally_symmetric_stack(stack)`;
-`true` forces it (error on a non-symmetric stack), `false` forces an independent
-solve at every node (useful to validate the rotation branch). The rotation branch
-solves at φ=0 and applies `_rotate_modes(modes0, φ_p)` for every node, so it needs
-no assumption on `phi_nodes[1]`. The point seed is recomputed at every node from
-the ACTUAL `kt` and the rotated modes (cheap: one 4×4 solve).
+Calls, per mode, `Modes_Stack(stack, ω, kx)` → `S_all_ingredients`/`S_all_Matrix` →
+`_cavity_transfer_columns` (T^o for every obs layer at once) →
+`Source_projection_Berreman_xyz` (point seed) → mode field basis per obs
+layer. If the stack is azimuthally symmetric, a single solve per kρ and the other 
+results are obtained by rotation. 
+
+# Arguments
+- `stack::Vector{<:AbstractLayer}`: vector of length L, with L the number of layers.
+- `ω::Real`: frequency. 
+- `source_layer::Int`: source layer id.
+- `kρ_nodes::AbstractVector{<:Real}`: integration kₜ nodes.
+- `kρ_weights::AbstractVector{<:Real}`: integration weight of each node.
+- `phi_nodes::Vector{Float64}`: integration φ nodes.
+- `phi_weights::Vector{Float64}`: integration weight of each φ node.
+
+# Returns 
+- `CavityTransferCache2D`: see struct description.
 """
 function build_cavity_transfer_2d(stack::Vector{<:AbstractLayer}, ω::Real, source_layer::Int,
                                   kρ_nodes::AbstractVector{<:Real}, kρ_weights::AbstractVector{<:Real},

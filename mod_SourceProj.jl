@@ -1,5 +1,5 @@
 module SourceProjection
-
+# TODO Rename ExcitationModeProjections, without the mod_
 export Source_projection_Berreman_xyz
 
 import ..Materials: AbstractMaterial

@@ -77,7 +77,7 @@ its pole panels scale with the pole width: a lossless pole has none, and the sca
 reports it at the floor width `1e-12·q`.
 """
 module ClosedFormGrid
-
+# TODO Rename SpectralQuadratureGrids, without the mod_
 export point_kx_grid, point_kρ_grid_2d, chunked_2d, box_kρ_grid, box_kρ_grid_grouped, phi_groups, is_lossless
 
 import ..Materials: AbstractLayer, _is_azimuthally_symmetric_stack

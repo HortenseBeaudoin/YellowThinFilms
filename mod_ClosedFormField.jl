@@ -38,7 +38,7 @@ a physical box always goes through the 2D path with `box_lateral`. Inside the bo
 path is supported: face ramps + local Ez, §5.3.
 """
 module ClosedFormField
-
+# TODO Rename SpectralIntegrals, without the mod_
 export amplitude_at, direct_amplitude, closed_form_G, closed_form_pixel, box_lateral_factor
 export interior_slab_at, ez_local_density
 

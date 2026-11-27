@@ -1,5 +1,5 @@
 module ModeSolver
-
+# TODO Rename BerremanModes, without the mod_
 export R2s, Modes
 export Modes_Stack
 
