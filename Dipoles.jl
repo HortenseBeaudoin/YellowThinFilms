@@ -1,5 +1,5 @@
-module SourceHandling
-# TODO Rename Dipoles, without the mod_
+module Dipoles
+
 export Dipole_constructor
 export Dipole
 

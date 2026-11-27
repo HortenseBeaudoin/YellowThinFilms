@@ -1,8 +1,8 @@
 """
-mod_ClosedFormField.jl -- per-pixel synthesis of the closed-form rewrite
+SpectralIntegrals.jl -- per-pixel synthesis of the closed-form rewrite
 (`PLAN_closed_form_point_source_rewrite.md` §1.2-1.3, §4.3).
 
-Given a `CavityTransferCache1D` (`mod_CavityTransfer.jl`), the Green's
+Given a `CavityTransferCache1D` (`SpectralCachedResponses.jl`), the Green's
 function of a point source at local depth `z` in `source_layer`, observed at
 local depth `z'` in `obs_layer` and lateral offset `(Δx,Δy)`, is assembled
 with NO stack solve:
@@ -37,12 +37,12 @@ The 1D cache accepts `Δz_box` too (the seed factor alone, `S ≡ 1`, for checks
 a physical box always goes through the 2D path with `box_lateral`. Inside the box's own slab (Phase 7) only the 2D
 path is supported: face ramps + local Ez, §5.3.
 """
-module ClosedFormField
-# TODO Rename SpectralIntegrals, without the mod_
+module SpectralIntegrals
+
 export amplitude_at, direct_amplitude, closed_form_G, closed_form_pixel, box_lateral_factor
 export interior_slab_at, ez_local_density
 
-import ..CavityTransfer: CavityTransferCache1D, CavityTransferCache2D
+import ..SpectralCachedResponses: CavityTransferCache1D, CavityTransferCache2D
 
 using LinearAlgebra
 using StaticArrays

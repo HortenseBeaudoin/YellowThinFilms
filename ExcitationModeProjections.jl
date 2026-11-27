@@ -1,9 +1,9 @@
-module SourceProjection
-# TODO Rename ExcitationModeProjections, without the mod_
+module ExcitationModeProjections
+
 export Source_projection_Berreman_xyz
 
-import ..Materials: AbstractMaterial
-import ..ModeSolver: Modes, R2s
+import ..LayeredMaterials: AbstractMaterial
+import ..BerremanModes: Modes, R2s
 using StaticArrays
 
 

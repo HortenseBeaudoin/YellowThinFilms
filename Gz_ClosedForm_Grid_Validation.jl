@@ -2,7 +2,7 @@ include("ClosedForm.jl")
 using LinearAlgebra, Printf, FastGaussQuadrature
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gz_ClosedForm_Grid_Validation.jl -- the adaptive grids of mod_ClosedFormGrid.jl
+# Gz_ClosedForm_Grid_Validation.jl -- the adaptive grids of SpectralQuadratureGrids.jl
 # (plan §4.2, Phase 8), validated by CONVERGENCE against dense fixed rules.
 #
 #  [P] point_kx_grid (1D, point source): field on rows away from the source vs

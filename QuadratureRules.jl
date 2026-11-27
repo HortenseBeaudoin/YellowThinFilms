@@ -1,10 +1,10 @@
-module Quadrature
-# TODO Rename QuadratureRules, without the mod_
+module QuadratureRules
+
 export choose_engine, fixed_kρ_rule, adaptive_seeds, adaptive_kx_grid
 export kronrod_rule, graded_panels, gl_rule, halve_panels, build_kphi_grid
 
-import ..Materials: AbstractLayer
-import ..Features: material_class
+import ..LayeredMaterials: AbstractLayer
+import ..SpectralSingularities: material_class
 using FastGaussQuadrature
 using LinearAlgebra: norm
 using QuadGK: quadgk_segbuf, cachedrule, Segment

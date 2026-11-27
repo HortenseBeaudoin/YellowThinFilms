@@ -340,6 +340,27 @@ Implements `HANDOUT_quadrature_hyperbolic_gyrotropic.md` (P1–P5) as one design
   - The lossless limit: a real-axis pole is reported at width `1e-12·q` and gets very fine panels; the integral is still ill-defined there (P6).
   - The point probes for `:adaptive` still put sources at `z_fracs·d` when `h_min` is not given.
 
+## Module renames (2026-11-27, branch `cleanup`)
+
+Files lose the `mod_` prefix, and each module takes its file's name. Older entries above use the old names.
+
+| Old file (module) | New file and module |
+|---|---|
+| `mod_Materials.jl` (`Materials`) | `LayeredMaterials` |
+| `mod_ModeSolver.jl` (`ModeSolver`) | `BerremanModes` |
+| `mod_ScatteringMatrix.jl` (`ScatteringMatrix`) | `ScatteringMatrices` |
+| `mod_Sources.jl` (`SourceHandling`) | `Dipoles` |
+| `mod_SourceProj.jl` (`SourceProjection`) | `ExcitationModeProjections` |
+| `mod_FieldSolver.jl` (`FieldSolver`) | `StackResponses` |
+| `mod_Features.jl` (`Features`) | `SpectralSingularities` |
+| `mod_Quadrature.jl` (`Quadrature`) | `QuadratureRules` |
+| `mod_Sheets.jl` (`Sheets`) | `CurrentSheets` |
+| `mod_CavityTransfer.jl` (`CavityTransfer`) | `SpectralCachedResponses` |
+| `mod_ClosedFormField.jl` (`ClosedFormField`) | `SpectralIntegrals` |
+| `mod_ClosedFormGrid.jl` (`ClosedFormGrid`) | `SpectralQuadratureGrids` |
+
+Exported names (`CavityTransferCache1D`, `closed_form_G`, ...) are unchanged. `mod_ClosedFormAssembly.jl`, `mod_GreenOperator.jl` and `mod_Dipz_SemiAnalytical.jl` keep their names for now. Scripts outside this repository that `include("mod_*.jl")` or `import ..Materials` etc. need the new names.
+
 ## Changes since 2026-09-24
 
 - **2026-09-28/30: Gila anisotropic study.** Written up in `RESULTS_gila_anisotropic_comparison.md`, with metrics in `diagnostics/results_summary.csv` (regenerate with `diagnostics/summarize_results.jl`). Conclusions:
@@ -356,18 +377,19 @@ Load everything with `include("ClosedForm.jl")`.
 
 | File | Role |
 |---|---|
-| `mod_Materials.jl` | Material ε/μ tensors (`IsotropicMaterial`, `UniaxialMaterial`, `BiaxialMaterial`, `GyrotropicMaterial`), layers (`FlatOpticalLayer`, `FlatLayer`), `_layer_μ`, `_is_azimuthally_symmetric_stack`. Split out of ModeSolver 2026-11-24. |
-| `mod_ModeSolver.jl` | Berreman eigenmodes (`Modes_Stack`; closed form for iso/uniaxial, `_berreman_core` + `eigen` otherwise), `_rotate_modes`. |
-| `mod_ScatteringMatrix.jl` | Interface/propagation S-matrices, Redheffer star product (`S_all_ingredients`, `S_all_Matrix`). |
-| `mod_Sources.jl` | `SourceDef`, `ModalSeed`, `Dipole`/`Dipole_constructor`, `Sheet`. |
-| `mod_SourceProj.jl` | `Source_projection_Berreman_xyz`: the point seed. |
-| `mod_FieldSolver.jl` | `_R_cavity`, `_seed_from_sources`, `_cavity_resummation`, `_walk_stack`, `_cavity_transfer_columns` (→ `T^o`); `Modal_amp`/`Modal_amp_profile` (direct per-kt solve, the foundation test's reference). |
-| `mod_KxGrid.jl` | `adaptive_kx_grid` (per-probe Gauss–Kronrod, merged partition), `branch_points`, `build_kphi_grid`, tail helpers. |
-| `mod_UniformSource.jl` | Uniform DFT grid + FFT pair, `point_current_sheet`. |
-| `mod_CavityTransfer.jl` | `CavityTransferCache1D` / `2D` (+ builders): `T^o`, `Q_src`, point seeds (`sb = −sib_raw`), mode field basis, `ϵ_src`. |
-| `mod_ClosedFormField.jl` | Synthesis: `amplitude_at`, `direct_amplitude`, `interior_slab_at`, `ez_local_density`, `closed_form_G` (1D J0/J1/J2; 2D exact sum or NUFFT; `box_lateral`, `Δz_box`), `closed_form_pixel`, `box_lateral_factor`. |
+| `LayeredMaterials.jl` | Material ε/μ tensors (`IsotropicMaterial`, `UniaxialMaterial`, `BiaxialMaterial`, `GyrotropicMaterial`), layers (`FlatOpticalLayer`, `FlatLayer`), `_layer_μ`, `_is_azimuthally_symmetric_stack`. Split out of ModeSolver 2026-11-24. |
+| `BerremanModes.jl` | Berreman eigenmodes (`Modes_Stack`; closed form for iso/uniaxial, `_berreman_core` + `eigen` otherwise), `_rotate_modes`. |
+| `ScatteringMatrices.jl` | Interface/propagation S-matrices, Redheffer star product (`S_all_ingredients`, `S_all_Matrix`). |
+| `Dipoles.jl` | `Dipole`/`Dipole_constructor`. |
+| `ExcitationModeProjections.jl` | `Source_projection_Berreman_xyz`: the point seed. |
+| `StackResponses.jl` | `_R_cavity`, `_seed_from_sources`, `_cavity_resummation`, `_walk_stack`, `_cavity_transfer_columns` (→ `T^o`); `Modal_amp`/`Modal_amp_profile` (direct per-kt solve, the foundation test's reference). |
+| `SpectralSingularities.jl` | `kspace_features`: light lines, real-axis poles, cut-offs, `material_class`, `branch_points`. |
+| `QuadratureRules.jl` | Engine choice, `adaptive_kx_grid` (Gauss–Kronrod), `gl_rule`, graded panels, `build_kphi_grid`. |
+| `CurrentSheets.jl` | `Sheet`, uniform DFT grid + FFT pair, `point_current_sheet`. |
+| `SpectralCachedResponses.jl` | `CavityTransferCache1D` / `2D` (+ builders): `T^o`, `Q_src`, point seeds (`sb = −sib_raw`), mode field basis, `ϵ_src`. |
+| `SpectralIntegrals.jl` | Synthesis: `amplitude_at`, `direct_amplitude`, `interior_slab_at`, `ez_local_density`, `closed_form_G` (1D J0/J1/J2; 2D exact sum or NUFFT; `box_lateral`, `Δz_box`), `closed_form_pixel`, `box_lateral_factor`. |
 | `mod_ClosedFormAssembly.jl` | Multi-source FFT assembly: `build_closed_form_green`, `apply_ghat`, `apply_closed_form`, `closed_form_field`. |
-| `mod_ClosedFormGrid.jl` | Adaptive grids: `point_kx_grid` (1D, point) and `box_kρ_grid` (2D, box-aware), `box_tail_cutoff`. |
+| `SpectralQuadratureGrids.jl` | Adaptive grids: `point_kx_grid` (1D, point), `point_kρ_grid_2d` and `box_kρ_grid` (2D, box-aware). |
 | `mod_Dipz_SemiAnalytical.jl` | Semi-analytical point-dipole model (vacuum/3-layer), kept only as an independent reference for the point validation. |
 | `ClosedForm.jl` | Loader. |
 | `Gz_ClosedForm_*_Validation.jl`, `Gz_ClosedForm_TestHelpers.jl` | Validation suite (below). |

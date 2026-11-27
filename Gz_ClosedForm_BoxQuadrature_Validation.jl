@@ -22,7 +22,7 @@ using LinearAlgebra, Printf, FastGaussQuadrature
 #   neighbour    -- the voxels directly above/below (h = Δz/2)
 #   across iface -- just across the source layer's interfaces
 # Reference: panels 0.004 to 40, 0.02 to 150, geometric grading onto the half-space
-# light lines with the u² substitution on the touching panels (Quadrature.gl_rule);
+# light lines with the u² substitution on the touching panels (QuadratureRules.gl_rule);
 # its own convergence is checked by halving every panel. PASS: every row group within
 # 10 × rtol, and no stall (box_kρ_grid raises on a stalled band).
 # Run from the repository root: julia --project -t 8 Gz_ClosedForm_BoxQuadrature_Validation.jl

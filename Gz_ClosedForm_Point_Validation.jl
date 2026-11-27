@@ -166,7 +166,7 @@ function E_free(r, p, k, ε)       # ϵ0 = μ0 = c = 1, e^{-iωt}
     (cis(k * R) / (4π * ε)) * (k^2 * cross(cross(n, p), n) / R + (3n * dot(n, p) - p) * (1 / R^3 - im * k / R^2))
 end
 worst_f = 0.0
-φf, wφf = Quadrature.build_kphi_grid(48)
+φf, wφf = QuadratureRules.build_kphi_grid(48)
 for ωf in (2π, π, 1.0, 3.7)
     εf = 1.0 + 1e-4im
     st = [lay(IsotropicMaterial(εf), 3.0) for _ in 1:3]

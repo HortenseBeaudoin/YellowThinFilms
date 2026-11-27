@@ -3,7 +3,7 @@ mod_ClosedFormAssembly.jl -- multi-source lateral assembly on the uniform DFT
 grid (`PLAN_closed_form_point_source_rewrite.md` §4.4).
 
 For one source depth `zsrc_local` (every source at that depth shares one `G`),
-`closed_form_G` (`mod_ClosedFormField.jl`) materializes `G` at every lateral
+`closed_form_G` (`SpectralIntegrals.jl`) materializes `G` at every lateral
 OFFSET the grid can produce, and it is FFT'd once to `Ĝ`. Any number of
 sources at that depth are then applied at once as a LINEAR convolution,
 
@@ -31,10 +31,10 @@ module ClosedFormAssembly
 export ClosedFormGreen, build_closed_form_green, apply_ghat, apply_closed_form, grid_offsets
 export closed_form_field, precompute_ghats!, padded_offsets
 
-import ..SourceHandling: Dipole
-import ..Sheets: Sheet, point_current_sheet
-import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D
-import ..ClosedFormField: closed_form_G
+import ..Dipoles: Dipole
+import ..CurrentSheets: Sheet, point_current_sheet
+import ..SpectralCachedResponses: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D
+import ..SpectralIntegrals: closed_form_G
 
 using StaticArrays
 using Base.Threads

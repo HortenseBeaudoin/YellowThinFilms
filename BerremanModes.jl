@@ -1,11 +1,11 @@
-module ModeSolver
-# TODO Rename BerremanModes, without the mod_
+module BerremanModes
+
 export R2s, Modes
 export Modes_Stack
 
 using LinearAlgebra, StaticArrays
-using ..Materials
-import ..Materials: _layer_μ
+using ..LayeredMaterials
+import ..LayeredMaterials: _layer_μ
 
 
 # ─────────────────────────────────────────────────────────────────────────────

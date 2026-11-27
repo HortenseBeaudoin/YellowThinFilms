@@ -1,12 +1,12 @@
-module Features
-# TODO Rename SpectralSingularities, without the mod_
+module SpectralSingularities
+
 export material_class, layer_light_lines, branch_points, real_axis_poles, kspace_features
 export decay_cutoff, tail_bound, box_tail_cutoff, thinnest_finite_layer
 
-import ..Materials: AbstractLayer, _layer_μ, _is_azimuthally_symmetric_stack
-import ..ModeSolver: Modes_Stack
-import ..ScatteringMatrix: S_all_Matrix, S_all_ingredients, _Redheffer
-import ..FieldSolver: _SProp
+import ..LayeredMaterials: AbstractLayer, _layer_μ, _is_azimuthally_symmetric_stack
+import ..BerremanModes: Modes_Stack
+import ..ScatteringMatrices: S_all_Matrix, S_all_ingredients, _Redheffer
+import ..StackResponses: _SProp
 using LinearAlgebra
 using StaticArrays
 using Base.Threads

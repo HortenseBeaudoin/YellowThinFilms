@@ -145,7 +145,7 @@ for (key, name, δ0, mk) in stacks
     δ = haskey(ENV, "ZRANK_LOSS") ? parse(Float64, ENV["ZRANK_LOSS"]) : δ0
     st = mk(δ)
     zobs = Dict(o => planes(0.5, Δ) for o in 1:3)
-    rtol = Materials._is_azimuthally_symmetric_stack(st) ? 1e-3 : 1e-4
+    rtol = LayeredMaterials._is_azimuthally_symmetric_stack(st) ? 1e-3 : 1e-4
     t_grid = @elapsed groups, ginfo = box_kρ_grid_grouped(st, ω, src; box=(Δ, Δ, Δ), N_phi=256, rtol=rtol,
                                                        kρ_cap=parse(Float64, get(ENV, "ZRANK_KCAP", "3000")), ρ_far=L, maxevals=200_000, classes_per_group=4)
     t_build = @elapsed D = dense_blocks(st, groups, g, zs, zobs)

@@ -1,5 +1,5 @@
 # airy_comparison.jl -- plane-wave reflectance of layered films: Gila (Bloch-periodic unit
-# cell) vs our S-matrix core (ModeSolver + Redheffer) vs an independent transfer-matrix
+# cell) vs our S-matrix core (BerremanModes + Redheffer) vs an independent transfer-matrix
 # (Airy) reference. Follows Gila's tutorial 07_thin_film:
 #   https://moleskysean.github.io/GilaElectromagnetics.jl/stable/tutorials/07_thin_film/
 #
@@ -13,10 +13,10 @@
 using GilaElectromagnetics, LinearAlgebra, StaticArrays, Printf, Plots
 
 const ROOT = joinpath(@__DIR__, "..", "..")
-include(joinpath(ROOT, "mod_Materials.jl"))
-include(joinpath(ROOT, "mod_ModeSolver.jl"))
-include(joinpath(ROOT, "mod_ScatteringMatrix.jl"))
-using .Materials, .ModeSolver, .ScatteringMatrix
+include(joinpath(ROOT, "LayeredMaterials.jl"))
+include(joinpath(ROOT, "BerremanModes.jl"))
+include(joinpath(ROOT, "ScatteringMatrices.jl"))
+using .LayeredMaterials, .BerremanModes, .ScatteringMatrices
 
 const k0 = 2π
 const Δ = 1//64                 # Gila cell, as in the tutorial

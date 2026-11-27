@@ -1,11 +1,11 @@
-module FieldSolver
-# TODO Rename StackResponses, without the mod_
+module StackResponses
+
 export ModalAmp, plane_wave_amp
 export _cavity_transfer_columns
 
-import ..Materials: AbstractLayer
-import ..ModeSolver: Modes, Modes_Stack
-import ..ScatteringMatrix: ScatteringM, _SProp, _Redheffer, S_all_ingredients, S_all_Matrix
+import ..LayeredMaterials: AbstractLayer
+import ..BerremanModes: Modes, Modes_Stack
+import ..ScatteringMatrices: ScatteringM, _SProp, _Redheffer, S_all_ingredients, S_all_Matrix
 
 
 using LinearAlgebra
@@ -251,7 +251,7 @@ layer `o ∈ obs_layers`. Related by:
 
 Obtained by running `_cavity_resummation` + `_walk_stack` on the 4 unit basis
 inputs at once. `S₊` is referenced at z=d,, `S₋` at z=0. Seeds come from
-`ClosedFormField._seed_phases`. For `o == layer` (same layer) the columns 
+`SpectralIntegrals._seed_phases`. For `o == layer` (same layer) the columns 
 are the reflected (cavity) part only. For `o ≠ layer` the columns are 
 `_walk_stack`'s `Ef_tot[o]`/`Eb_tot[o]`.
 

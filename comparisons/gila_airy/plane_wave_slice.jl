@@ -21,7 +21,7 @@ using GilaElectromagnetics, LinearAlgebra, StaticArrays, Printf, Random, Plots
 
 const ROOT = joinpath(@__DIR__, "..", "..")
 include(joinpath(ROOT, "ClosedForm.jl"))
-import .CavityTransfer: _mode_field_core, _mode_field_eps
+import .SpectralCachedResponses: _mode_field_core, _mode_field_eps
 
 const k0 = 2π
 const ω = k0

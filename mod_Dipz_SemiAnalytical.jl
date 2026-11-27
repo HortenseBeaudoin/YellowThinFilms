@@ -5,7 +5,7 @@ export eval_semi, eval_semi_external, eval_semi_internal, eval_semi_external_x
 export eval_semi_cartesian
 export build_kx_grid
 
-import ..Features: branch_points
+import ..SpectralSingularities: branch_points
 using LinearAlgebra
 using Bessels
 using FastGaussQuadrature
@@ -16,7 +16,7 @@ using FastGaussQuadrature
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Fixed, non-uniform kx grid (2026-09-18: moved here from `mod_KxGrid.jl`).
-#  `adaptive_kx_grid` (`mod_Quadrature.jl`) superseded this everywhere else in the
+#  `adaptive_kx_grid` (`QuadratureRules.jl`) superseded this everywhere else in the
 #  live pipeline -- see that module's own docstring note on this move. This
 #  module keeps it as its own ground-truth quadrature: `_semi_common` below
 #  is the only real caller left, plus `Gz_ShapedPixelKernel_Validation.jl`.

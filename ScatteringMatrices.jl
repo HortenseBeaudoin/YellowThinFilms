@@ -1,11 +1,11 @@
-module ScatteringMatrix
-# TODO Rename ScatteringMatrices, without the mod_
+module ScatteringMatrices
+
 export ScatteringM
 export S_all_Matrix
 export S_all_ingredients
 
-import ..Materials: AbstractLayer
-import ..ModeSolver: Modes
+import ..LayeredMaterials: AbstractLayer
+import ..BerremanModes: Modes
 using LinearAlgebra
 using StaticArrays
 

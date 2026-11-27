@@ -56,13 +56,13 @@ module GreenOperator
 export LayerGreenOperator, build_layer_operator, build_layer_operator_grouped, apply_operator, dipole_moments, operator_summary
 export ZSkeleton, z_skeletons, z_skeletons_grouped
 
-import ..Materials: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial, AbstractLayer
-import ..ModeSolver: _modes_layer
-import ..CavityTransfer: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D, build_cavity_transfer_2d
-import ..ClosedFormField: closed_form_G
+import ..LayeredMaterials: _is_azimuthally_symmetric_stack, IsotropicMaterial, UniaxialMaterial, AbstractLayer
+import ..BerremanModes: _modes_layer
+import ..SpectralCachedResponses: AbstractCavityTransferCache, CavityTransferCache1D, CavityTransferCache2D, build_cavity_transfer_2d
+import ..SpectralIntegrals: closed_form_G
 import ..ClosedFormAssembly: padded_offsets, _plan, _padded_size
-import ..SourceHandling: Dipole
-import ..Sheets: _nearest_node_index
+import ..Dipoles: Dipole
+import ..CurrentSheets: _nearest_node_index
 
 using LinearAlgebra
 using Base.Threads
@@ -484,7 +484,7 @@ end
     build_layer_operator_grouped(stack, ω, source_layer, groups, grid, z_src, z_obs_by_layer;
                                  node_budget=900_000, kwargs...) -> (op, t_cache, t_build)
 
-The operator on a φ-dependent kρ grid (`ClosedFormGrid.box_kρ_grid_grouped`):
+The operator on a φ-dependent kρ grid (`SpectralQuadratureGrids.box_kρ_grid_grouped`):
 one `CavityTransferCache2D` + `build_layer_operator` per group (`(kρ, wρ, φ, wφ)`),
 summed block by block -- exact, since every block is linear in the quadrature
 sum. A group with more than `node_budget` kρ × φ nodes is split into φ chunks

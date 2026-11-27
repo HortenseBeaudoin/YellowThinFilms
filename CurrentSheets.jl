@@ -1,5 +1,5 @@
-module Sheets
-# TODO Rename CurrentSheets, without the mod_
+module CurrentSheets
+
 export Sheet, uniform_kxky_grid, point_current_sheet
 
 # ─────────────────────────────────────────────────────────────────────────────

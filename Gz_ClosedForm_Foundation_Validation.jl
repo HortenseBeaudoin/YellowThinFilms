@@ -4,7 +4,7 @@ using LinearAlgebra, StaticArrays, Printf, Random
 # ─────────────────────────────────────────────────────────────────────────────
 # Gz_ClosedForm_Foundation_Validation.jl -- the §3 foundation, checked on the physics.
 #
-# `_cavity_transfer_columns` runs FieldSolver's cavity resummation + stack walk
+# `_cavity_transfer_columns` runs StackResponses' cavity resummation + stack walk
 # on the 4 unit edge seeds, giving the z-independent 4×4 map T^o per obs layer.
 # No second solver is used as reference: the amplitudes `T^o·[S₊;S₋]` (plus the
 # direct term in the source layer) must satisfy the conditions that define the
@@ -19,7 +19,7 @@ using LinearAlgebra, StaticArrays, Printf, Random
 # biaxial and gyrotropic stacks; propagating to evanescent kt.
 # ─────────────────────────────────────────────────────────────────────────────
 
-const FS = FieldSolver
+const FS = StackResponses
 lay(m, d) = FlatOpticalLayer(m, d)
 m_vac = IsotropicMaterial(1.0 + 0.001im)
 m_gl  = IsotropicMaterial(2.25 + 0.001im)

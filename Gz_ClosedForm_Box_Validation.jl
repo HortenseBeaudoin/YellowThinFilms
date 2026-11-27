@@ -128,11 +128,11 @@ end
 function node_data(mat, kx, ky)
     md = Modes_Stack([FlatOpticalLayer(mat, 1.0)], ω, [kx, ky])[1]
     sif, sib = Source_projection_Berreman_xyz([kx, ky], ω, mat, md)
-    M = ModeSolver._berreman_core(mat, IsotropicMaterial(1.0 + 0im), ω, SVector(kx, ky))
+    M = BerremanModes._berreman_core(mat, IsotropicMaterial(1.0 + 0im), ω, SVector(kx, ky))
     ϵ = SMatrix{3,3,ComplexF64}(mat[i, j] for i in 1:3, j in 1:3)
     ϵtz = SVector(ϵ[1, 3], ϵ[2, 3]); ϵzz = ϵ[3, 3]; kts = SVector{2,ComplexF64}(kx, ky)
     Jt = (-im * ω) .* SMatrix{2,3,ComplexF64}(1, 0, 0, 1, 0, 0); Jz = (-im * ω) .* SVector{3,ComplexF64}(0, 0, 1)
-    Js = vcat(kts * transpose(Jz) / (ϵzz * ω), ModeSolver.R2s * Jt - (ModeSolver.R2s * ϵtz) * transpose(Jz) / ϵzz)
+    Js = vcat(kts * transpose(Jz) / (ϵzz * ω), BerremanModes.R2s * Jt - (BerremanModes.R2s * ϵtz) * transpose(Jz) / ϵzz)
     return (; md, sif, sib, M, ϵ, Js, Jt, Jz, kx, ky)
 end
 Ez_of(nd, Ψ) = [-(nd.ϵ[3, 1] * Ψ[1, q] + nd.ϵ[3, 2] * Ψ[2, q] + (nd.kx * Ψ[4, q] - nd.ky * Ψ[3, q]) / ω) / nd.ϵ[3, 3] for q in 1:3]
